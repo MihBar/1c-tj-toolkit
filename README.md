@@ -100,6 +100,38 @@ python3 -B tools/one_c_tj_analyzer/analyze_1c_tj.py --version
 python3 -B -m unittest discover -s tools/one_c_tj_analyzer/tests -v
 ```
 
+### Универсальные команды запуска
+
+Обёртки `scripts/run.cmd` для Windows и `scripts/run.sh` для Linux/macOS
+определяют корень проекта независимо от текущего каталога, передают аргументы
+исходным Python CLI без изменения и возвращают их код завершения. Бизнес-логика
+в обёртках не дублируется. Чтобы явно выбрать интерпретатор, задайте переменную
+окружения `PYTHON` равной пути к исполняемому файлу Python 3.
+
+```powershell
+scripts\run.cmd --help
+scripts\run.cmd test
+scripts\run.cmd analyze "C:\Path With Spaces\1clogs" --output-dir "C:\Results\run_001"
+scripts\run.cmd verify --analysis-dir "C:\Results\run_001"
+scripts\run.cmd slices --analysis-dir "C:\Results\run_001" --config .\tools\one_c_tj_analyzer\configs\stage1.full.example.json --output-dir "C:\Results\slices_001"
+scripts\run.cmd report --analysis-dir "C:\Results\run_001" --report-config .\tools\one_c_tj_report\configs\overview.example.json --output "C:\Results\report_001.pdf"
+```
+
+```bash
+./scripts/run.sh --help
+./scripts/run.sh test
+./scripts/run.sh analyze "/path/with spaces/1clogs" --output-dir "/tmp/tj-results/run_001"
+./scripts/run.sh check-data
+```
+
+Команды `test-analyzer` и `test-report` запускают наборы тестов по отдельности.
+`check-data` проверяет сохранённый обезличенный fixture и его согласованность в
+JSON, CSV и SQLite через существующие контрактные тесты PDF-модуля. Для команд
+`report`, `test-report`, `test` и `check-data` предварительно установите
+зависимости из `requirements-report-test.txt`. Рабочие результаты следует
+направлять за пределы репозитория или в исключённые каталоги `data/analysis/` и
+`output/`; обёртки намеренно не выбирают каталог результата по умолчанию.
+
 ## Рабочий порядок
 
 Исходные журналы задаются явно. В примере ниже замените `C:\Path\To\1clogs` на фактический каталог. Результаты новых запусков сохраняйте в отдельных каталогах внутри проекта.
