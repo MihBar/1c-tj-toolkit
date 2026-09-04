@@ -65,6 +65,8 @@ class EventStore:
         self.connection.executescript(Path(__file__).with_name("event_schema.sql").read_text(encoding="utf-8"))
         self.connection.executescript(Path(__file__).with_name("error_schema.sql").read_text(encoding="utf-8"))
         self.pending = 0
+        self.on_db_link = None
+        self.on_error_link = None
         for key, value in {**VERSIONS, **ERROR_METADATA, "linkage_rules": LINKAGE_RULES, "publication_state": "building"}.items():
             insert(self.connection, "metadata", {"key": key, "value": canonical(value)})
 
@@ -164,6 +166,8 @@ class EventStore:
             for candidate in candidate_evidence(self.connection, event, decision):
                 insert(self.connection, "link_candidates", candidate)
             self.tick()
+            if self.on_db_link is not None:
+                self.on_db_link(1)
         self.connection.commit()
 
     def numeric(self, event_id):

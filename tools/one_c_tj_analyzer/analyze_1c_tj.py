@@ -43,6 +43,7 @@ from event_store import EventStore, CALL_DETAIL_FIELDS, VERSIONS, timestamp as s
 from event_linking import LINKAGE_RULES
 from error_rules import ERROR_METADATA, ERROR_GROUP_FIELDS, normalize_error, classify_error
 from error_store import link_errors, error_rows, error_groups, error_summary
+from progress import ProgressReporter
 
 
 VERSION = "1.6.1"
@@ -466,7 +467,7 @@ def discover_sources(
     return sources, archive_inventory, warnings
 
 
-def hash_stream(stream: BinaryIO, max_bytes: int = MAX_SOURCE_BYTES) -> tuple[str, int | None, bytes, int]:
+def hash_stream(stream: BinaryIO, max_bytes: int = MAX_SOURCE_BYTES, on_bytes=None) -> tuple[str, int | None, bytes, int]:
     digest = hashlib.sha256()
     nul_offset: int | None = None
     first = bytearray()
@@ -478,6 +479,8 @@ def hash_stream(stream: BinaryIO, max_bytes: int = MAX_SOURCE_BYTES) -> tuple[st
         if offset + len(chunk) > max_bytes:
             raise OSError(f"uncompressed source exceeds {max_bytes} byte limit")
         digest.update(chunk)
+        if on_bytes is not None:
+            on_bytes(len(chunk))
         if len(first) < 256 * 1024:
             first.extend(chunk[: 256 * 1024 - len(first)])
         if nul_offset is None:
@@ -511,7 +514,7 @@ def complete_utf8_tj_prefix_bytes(source: SourceRef, nul_offset: int) -> int:
     return headers[-1].start()
 
 
-def inspect_source(source: SourceRef, hash_sources: bool, salvage_nul_prefix: bool = False) -> SourceHealth:
+def inspect_source(source: SourceRef, hash_sources: bool, salvage_nul_prefix: bool = False, on_bytes=None) -> SourceHealth:
     if source.kind in {"loose", "zip", "tar"} and source.size > MAX_SOURCE_BYTES:
         return SourceHealth(source, "skipped", f"source exceeds {MAX_SOURCE_BYTES} byte limit")
     try:
@@ -525,11 +528,11 @@ def inspect_source(source: SourceRef, hash_sources: bool, salvage_nul_prefix: bo
                         nul_offset = pos if pos >= 0 else None
                 except (OSError, ValueError):
                     stream.seek(0)
-                    _, nul_offset, first, source.size = hash_stream(stream)
+                    _, nul_offset, first, source.size = hash_stream(stream, on_bytes=on_bytes)
                 sha256 = ""
         else:
             with source.open_binary() as stream:
-                sha256, nul_offset, first, source.size = hash_stream(stream)
+                sha256, nul_offset, first, source.size = hash_stream(stream, on_bytes=on_bytes)
                 if not hash_sources:
                     sha256 = ""
     except SOURCE_READ_ERRORS as exc:
@@ -771,18 +774,20 @@ def fresh_dataset(source: SourceRef) -> dict:
     }
 
 
-def analyze_pass_one(valid_health: list[SourceHealth], store: EventStore) -> tuple[list[CallRecord], dict[str, dict]]:
+def analyze_pass_one(valid_health: list[SourceHealth], store: EventStore, progress=None) -> tuple[list[CallRecord], dict[str, dict]]:
     calls: list[CallRecord] = []
     datasets: dict[str, dict] = {}
     call_id = 0
     for health in valid_health:
         source = health.source
+        if progress is not None:
+            progress.set_detail(source.display_path)
         dataset = datasets.setdefault(source.dataset_id, fresh_dataset(source))
         dataset["files"].add(source.display_path)
         dataset["processes"].add(source.process)
         try:
             byte_limit = health.analyzed_bytes if health.status == "partial_nul_salvaged" else None
-            reader = RecordStream(source, byte_limit)
+            reader = RecordStream(source, byte_limit, on_bytes=progress.advance if progress is not None else None)
             for positioned in reader:
                 record = positioned.text
                 health.records += 1
@@ -897,6 +902,7 @@ def fresh_linkage(measurement_id: str, dataset_id: str) -> dict:
 def analyze_pass_two(
     calls: list[CallRecord],
     store: EventStore,
+    progress=None,
 ) -> tuple[
     dict[tuple[str, str], SqlGroup],
     dict[tuple[str, str, str], LockGroup],
@@ -957,6 +963,8 @@ def analyze_pass_two(
                 group.linked_call_count += 1
                 linked_call.lock_count += 1
                 linked_call.lock_duration_us += duration_us
+        if progress is not None:
+            progress.advance(1)
     calls_by_id = {call.call_id: call for call in calls}
     for row in store.db_rows(include_sql=True):
         measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
@@ -987,6 +995,8 @@ def analyze_pass_two(
                 item[0] += 1
                 item[1] += duration_us
                 item[2] = max(item[2], duration_us)
+        if progress is not None:
+            progress.advance(1)
     for row in error_rows(store.connection):
         measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
         stats = linkage.setdefault((dataset_id, measurement_id), fresh_linkage(measurement_id, dataset_id))
@@ -998,6 +1008,8 @@ def analyze_pass_two(
         else:
             reason = row["linkage_reason"]
             stats["unlinked_" + (reason if reason in {"missing_timestamp", "missing_thread"} else "no_containing_call")] += 1
+        if progress is not None:
+            progress.advance(1)
     return sql_groups, lock_groups, linkage
 
 
@@ -1620,6 +1632,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--top-calls", type=int, default=200, help="Number of individual slowest CALL rows to export")
     parser.add_argument("--overwrite", action="store_true", help="Allow replacing files in a non-empty output folder")
+    parser.add_argument("--progress", action="store_true", help="Write runtime progress and approximate ETA to stderr")
+    parser.add_argument("--progress-format", choices=("text", "jsonl"), default="text", help="Progress output format; default: text")
+    parser.add_argument("--progress-interval", type=float, default=1.0, help="Minimum seconds between progress updates; default: 1.0")
     parser.add_argument("--version", action="version", version=VERSION)
     return parser.parse_args(argv)
 
@@ -1638,11 +1653,26 @@ def run(argv: list[str] | None = None) -> int:
         raise AnalyzerError(f"output folder is not empty; use --overwrite or another path: {output_dir}", 5)
     if args.top_calls < 0:
         raise AnalyzerError("--top-calls must be non-negative", 2)
+    if not math.isfinite(args.progress_interval) or args.progress_interval <= 0:
+        raise AnalyzerError("--progress-interval must be a finite positive number", 2)
 
+    progress = ProgressReporter(args.progress, args.progress_format, args.progress_interval)
+    active_progress = progress if args.progress else None
+    progress.start("source_discovery")
     sources, archive_inventory, warnings = discover_sources(
         root, output_dir, args.archive_mode, set(args.exclude_dir),
     )
-    health = [inspect_source(source, True, args.salvage_nul_prefix) for source in sources]
+    progress.finish(f"{len(sources)} source(s)")
+    progress.start("source_inspection", sum(source.size for source in sources), "bytes")
+    health = []
+    for source in sources:
+        progress.set_detail(source.display_path)
+        health.append(inspect_source(
+            source, True, args.salvage_nul_prefix,
+            active_progress.advance if active_progress is not None else None,
+        ))
+    progress.finish(f"{len(health)} source(s) inspected")
+    progress.start("source_identity", len(health), "sources")
     try:
         source_map = assign_sources(health, root, args.source_map, args.capture_id)
     except (ValueError, KeyError, TypeError, OSError) as exc:
@@ -1665,6 +1695,7 @@ def run(argv: list[str] | None = None) -> int:
             "message": f"{duplicate_count} mapped copies excluded; all physical locations retained in analysis.sqlite",
         })
     valid_health = [item for item in health if item.status in {"valid", "valid_no_timestamp", "partial_nul_salvaged"}]
+    progress.finish(f"{len(valid_health)} source(s) selected")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".tj-detail-", dir=output_dir.parent) as staging:
         stage = Path(staging)
@@ -1672,12 +1703,35 @@ def run(argv: list[str] | None = None) -> int:
         phase = "source_ingestion"
         try:
             store.add_sources(health)
-            calls, raw_datasets = analyze_pass_one(valid_health, store)
+            progress.start("source_ingestion", sum(item.analyzed_bytes for item in valid_health), "bytes")
+            calls, raw_datasets = analyze_pass_one(valid_health, store, active_progress)
+            progress.finish(f"{sum(item.records for item in valid_health)} record(s)")
             phase = "stored_event_linkage"
+            db_event_count = None
+            if active_progress is not None:
+                db_event_count = store.connection.execute("SELECT count(*) FROM db_events").fetchone()[0]
+                progress.start("db_event_linkage", db_event_count, "events")
+                store.on_db_link = active_progress.advance
             store.link_db()
+            store.on_db_link = None
+            if active_progress is not None:
+                progress.finish()
+            error_event_count = None
+            if active_progress is not None:
+                error_event_count = store.connection.execute("SELECT count(*) FROM error_events").fetchone()[0]
+                progress.start("error_event_linkage", error_event_count, "events")
+                store.on_error_link = active_progress.advance
             link_errors(store)
+            store.on_error_link = None
+            if active_progress is not None:
+                progress.finish()
             phase = "stored_event_aggregation"
-            sql_groups, lock_groups, raw_linkage = analyze_pass_two(calls, store)
+            if active_progress is not None:
+                aggregate_event_count = store.connection.execute(
+                    "SELECT count(*) FROM events WHERE event_type IN ('SDBL','TLOCK','TTIMEOUT','TDEADLOCK')"
+                ).fetchone()[0] + db_event_count + error_event_count
+                progress.start("stored_event_aggregation", aggregate_event_count, "events")
+            sql_groups, lock_groups, raw_linkage = analyze_pass_two(calls, store, active_progress)
             datasets = dataset_rows(raw_datasets)
             operations = aggregate_operations(calls)
             identical = identical_operation_rows(calls)
@@ -1688,22 +1742,30 @@ def run(argv: list[str] | None = None) -> int:
             linkage = linkage_rows(raw_linkage)
             top_calls = call_detail_rows(calls, args.top_calls)
             call_observations = call_observation_rows(calls)
+            if active_progress is not None:
+                progress.finish()
             phase = "result_export"
+            progress.start("result_export")
             artifacts = store.finish(health, source_map, stage)
             write_outputs(stage, root, args.archive_mode, args.salvage_nul_prefix, archive_inventory, warnings, health,
                           datasets, operations, identical, sql, errors, locks, linkage, top_calls, call_observations,
                           artifacts, source_map, errors_summary)
+            progress.finish()
             # Validate the completed bundle before replacing any user output.
             from slice_input import load_bundle
             phase = "result_verification"
+            progress.start("result_verification")
             load_bundle(stage)
+            progress.finish()
             phase = "result_publication"
+            progress.start("result_publication")
             output_dir.mkdir(parents=True, exist_ok=True)
             names = sorted(p.name for p in stage.iterdir() if p.name != "analysis_metrics.json")
             names.append("analysis_metrics.json")
             for name in names:
                 os.replace(stage/name, output_dir/name)
             outputs = [output_dir/name for name in names]
+            progress.finish(f"{len(outputs)} file(s) written")
         except (OSError, sqlite3.Error) as exc:
             raise AnalyzerError(f"{phase} failed; result is not a validated publication: {exc}") from exc
         finally:

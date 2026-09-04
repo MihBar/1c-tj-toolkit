@@ -32,6 +32,8 @@ def link_errors(store):
             "root_cause": None, "cancellation_initiator": None}, ignore=True)
         insert(connection, "error_incident_members", member)
         store.tick()
+        if store.on_error_link is not None:
+            store.on_error_link(1)
     connection.commit()
 
 

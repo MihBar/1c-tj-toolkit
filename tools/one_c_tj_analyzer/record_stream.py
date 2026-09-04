@@ -24,9 +24,10 @@ class Record:
 
 
 class RecordStream:
-    def __init__(self, source, byte_limit=None, max_record_bytes=None):
+    def __init__(self, source, byte_limit=None, max_record_bytes=None, on_bytes=None):
         self.source, self.byte_limit = source, byte_limit
         self.max_record_bytes = MAX_RECORD_BYTES if max_record_bytes is None else max_record_bytes
+        self.on_bytes = on_bytes
         self.digest = hashlib.sha256()
         self.bytes_read = 0
         self.prefix_bytes = 0
@@ -39,6 +40,8 @@ class RecordStream:
             block = stream.read(remaining) if remaining else b""
             self.bytes_read += len(block)
             self.digest.update(block)
+            if block and self.on_bytes is not None:
+                self.on_bytes(len(block))
             buffer += block
             consumed = 0
             for match in _NEWLINE.finditer(buffer):
