@@ -7,6 +7,7 @@ import json
 from error_rules import (ERROR_METADATA, INCIDENT_RULES_VERSION, message_fields, classify_error,
                          error_decision, error_candidates, membership)
 from error_store import ERROR_EXPORTS, export_rows, error_groups, error_summary
+from event_linking import candidates
 
 
 def verify_errors(root, manifest, calls, connection, require, compare_csv):
@@ -20,14 +21,15 @@ def verify_errors(root, manifest, calls, connection, require, compare_csv):
         fields = message_fields(json.loads(event["attributes_json"]))
         require(all(event[k] == v for k, v in fields.items()), "error message/signature mismatch")
         require(event["category"] == classify_error(event["raw_message"] or ""), "error text category mismatch")
-        expected = error_decision(connection, event)
+        candidate_rows = candidates(connection, event)
+        expected = error_decision(connection, event, candidate_rows)
         actual = connection.execute("SELECT * FROM error_link_decisions WHERE event_id=?", (event["event_id"],)).fetchone()
         require(actual is not None and dict(actual) == expected, "error link decision mismatch")
         actual_candidates = connection.execute(
             "SELECT k.* FROM error_link_candidates k JOIN call_events c ON c.event_id=k.call_event_id WHERE k.event_id=? ORDER BY c.legacy_call_id",
             (event["event_id"],))
         connect_relation = None
-        for actual_row, expected_row in itertools.zip_longest(actual_candidates, error_candidates(connection, event, expected)):
+        for actual_row, expected_row in itertools.zip_longest(actual_candidates, error_candidates(connection, event, expected, candidate_rows)):
             require(actual_row is not None and expected_row is not None and dict(actual_row) == expected_row, "error candidate evidence mismatch")
             if expected_row["selected"]:
                 connect_relation = expected_row["connect_relation"]

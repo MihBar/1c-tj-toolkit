@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from event_store import insert, export_csv, timestamp
+from event_linking import candidates
 from error_rules import (ERROR_SIGNATURE_VERSION, INCIDENT_RULES_VERSION, clean,
                          error_decision, error_candidates, membership)
 
@@ -18,10 +19,11 @@ def link_errors(store):
     connection = store.connection
     connection.commit()
     for event in connection.execute("SELECT e.*,r.raw_message,r.message_state FROM events e JOIN error_events r USING(event_id) ORDER BY e.event_id"):
-        decision = error_decision(connection, event)
+        candidate_rows = candidates(connection, event)
+        decision = error_decision(connection, event, candidate_rows)
         insert(connection, "error_link_decisions", decision)
         connect_relation = None
-        for candidate in error_candidates(connection, event, decision):
+        for candidate in error_candidates(connection, event, decision, candidate_rows):
             insert(connection, "error_link_candidates", candidate)
             if candidate["selected"]:
                 connect_relation = candidate["connect_relation"]

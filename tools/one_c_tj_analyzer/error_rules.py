@@ -67,12 +67,12 @@ def message_fields(attrs):
             "error_signature_version": ERROR_SIGNATURE_VERSION}
 
 
-def error_decision(connection, event):
-    return {**decide(connection, event), "linkage_rules_version": ERROR_LINKAGE_VERSION}
+def error_decision(connection, event, candidate_rows=None):
+    return {**decide(connection, event, candidate_rows), "linkage_rules_version": ERROR_LINKAGE_VERSION}
 
 
-def error_candidates(connection, event, decision):
-    for row in candidate_evidence(connection, event, decision):
+def error_candidates(connection, event, decision, candidate_rows=None):
+    for row in candidate_evidence(connection, event, decision, candidate_rows):
         yield {k: "event_missing" if k in {"session_relation", "connect_relation"} and v == "db_missing" else v for k, v in row.items()}
 
 

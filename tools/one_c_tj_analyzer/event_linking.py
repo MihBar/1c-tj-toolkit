@@ -28,14 +28,14 @@ def relation(left, right):
 
 
 def candidates(connection, event):
-    return connection.execute(
+    return tuple(connection.execute(
         "SELECT e.*, c.legacy_call_id FROM events e JOIN call_events c USING(event_id) "
         "WHERE e.event_type='CALL' AND e.dataset_id=? AND e.user=? AND e.process=? AND e.thread=? "
         "AND e.start_time_us<=? AND e.end_time_us>=? ORDER BY c.legacy_call_id",
-        (event["dataset_id"], event["user"], event["process"], event["thread"], event["end_time_us"], event["end_time_us"]))
+        (event["dataset_id"], event["user"], event["process"], event["thread"], event["end_time_us"], event["end_time_us"])))
 
 
-def decide(connection, event):
+def decide(connection, event, candidate_rows=None):
     result = {"event_id": event["event_id"], "linkage_rules_version": LINKAGE_RULES_VERSION,
               "parent_event_id": None, "status": "unlinked", "reason_code": "no_containing_call",
               "candidate_count": 0, "eligible_count": 0, "session_match_count": 0,
@@ -47,7 +47,9 @@ def decide(connection, event):
         result["reason_code"] = "missing_thread"
         return result
     best, best_session = None, None
-    for candidate in candidates(connection, event):
+    if candidate_rows is None:
+        candidate_rows = candidates(connection, event)
+    for candidate in candidate_rows:
         result["candidate_count"] += 1
         rank = (candidate["duration_us"], -candidate["legacy_call_id"])
         if best is None or rank > best[0]:
@@ -74,10 +76,12 @@ def decide(connection, event):
     return result
 
 
-def candidate_evidence(connection, event, decision):
+def candidate_evidence(connection, event, decision, candidate_rows=None):
     if not decision["candidate_count"]:
         return
-    for candidate in candidates(connection, event):
+    if candidate_rows is None:
+        candidate_rows = candidates(connection, event)
+    for candidate in candidate_rows:
         session_relation = relation(event["session"], candidate["session"])
         eligible = not decision["session_match_count"] or session_relation == "match"
         selected = candidate["event_id"] == decision["parent_event_id"]
