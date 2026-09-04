@@ -150,6 +150,23 @@ def median_value(values: list[int]) -> float:
     return round(float(statistics.median(values)), 3) if values else 0.0
 
 
+def duration_order_statistics(ordered_durations: list[int]) -> dict:
+    """Return CALL order statistics from nonempty, ascending durations."""
+    count = len(ordered_durations)
+    middle = count // 2
+    median = (
+        ordered_durations[middle] if count % 2
+        else (ordered_durations[middle - 1] + ordered_durations[middle]) / 2
+    )
+    return {
+        "median_us": round(float(median), 3),
+        "p95_us": ordered_durations[math.ceil(0.95 * count) - 1],
+        "p99_us": ordered_durations[math.ceil(0.99 * count) - 1],
+        "max_us": ordered_durations[-1],
+        "min_us": ordered_durations[0],
+    }
+
+
 def canonical_path(path: Path) -> str:
     return str(path.resolve())
 
@@ -1055,7 +1072,9 @@ def aggregate_operations(calls: list[CallRecord], scope: str = "dataset") -> lis
     result: list[dict] = []
     for (measurement_id, dataset_group, user, signature), group_calls in sorted(groups.items()):
         durations = [call.duration_us for call in group_calls]
+        ordered_durations = sorted(durations)
         total = sum(durations)
+        mean = total / len(durations)
         db_total = sum(call.db_duration_us for call in group_calls)
         db_count = sum(call.db_count for call in group_calls)
         dataset_ids = sorted({call.dataset_id for call in group_calls})
@@ -1086,12 +1105,8 @@ def aggregate_operations(calls: list[CallRecord], scope: str = "dataset") -> lis
             "last_timestamp": timestamps[-1].isoformat(sep=" ") if timestamps else "",
             "count": len(group_calls),
             "duration_us": total,
-            "avg_us": round(safe_mean(durations), 3),
-            "median_us": median_value(durations),
-            "p95_us": nearest_rank(durations, 0.95),
-            "p99_us": nearest_rank(durations, 0.99),
-            "max_us": max(durations),
-            "min_us": min(durations),
+            "avg_us": round(mean, 3),
+            **duration_order_statistics(ordered_durations),
             "over_1s": sum(value >= 1_000_000 for value in durations),
             "over_5s": sum(value >= 5_000_000 for value in durations),
             "over_10s": sum(value >= 10_000_000 for value in durations),
@@ -1105,7 +1120,7 @@ def aggregate_operations(calls: list[CallRecord], scope: str = "dataset") -> lis
             "lock_count": sum(call.lock_count for call in group_calls),
             "lock_duration_us": sum(call.lock_duration_us for call in group_calls),
             "error_count": sum(call.error_count for call in group_calls),
-            "coefficient_of_variation": round(statistics.pstdev(durations) / safe_mean(durations), 6) if len(durations) > 1 and safe_mean(durations) else 0.0,
+            "coefficient_of_variation": round(statistics.pstdev(durations) / mean, 6) if len(durations) > 1 and mean else 0.0,
             "max_db_per_call": max(call.db_count for call in group_calls),
             "top_nested_sql": top_sql,
             "call_ids": [call.call_id for call in sorted(group_calls, key=lambda item: item.call_id)],
