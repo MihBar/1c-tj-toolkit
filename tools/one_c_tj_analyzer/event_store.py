@@ -176,19 +176,76 @@ class EventStore:
                                   "unit": r["unit"], "reason": r["reason_code"]}
                 for r in self.connection.execute("SELECT * FROM numeric_values WHERE event_id=? ORDER BY field_name", (event_id,))}
 
+    def _db_numeric_groups(self):
+        """Yield one bounded numeric_values group per DB event that has stored values."""
+        query = (
+            "SELECT o.source_version_id,o.byte_start,o.event_id,n.field_name,n.raw_value,n.value_int,n.state,n.unit,n.reason_code "
+            "FROM db_observations o JOIN numeric_values n ON n.event_id=o.event_id "
+            "ORDER BY o.source_version_id,o.byte_start,n.field_name"
+        )
+        current_key = None
+        current_values = None
+        for row in self.connection.execute(query):
+            key = (row["source_version_id"], row["byte_start"], row["event_id"])
+            if key != current_key:
+                if current_key is not None:
+                    yield current_key, current_values
+                current_key, current_values = key, {}
+            current_values[row["field_name"]] = {
+                "state": row["state"], "raw_value": row["raw_value"], "value": row["value_int"],
+                "unit": row["unit"], "reason": row["reason_code"],
+            }
+        if current_key is not None:
+            yield current_key, current_values
+
+    def _event_numeric_groups(self, event_types):
+        """Yield bounded numeric groups in stored event order for selected types."""
+        placeholders = ",".join("?" for _ in event_types)
+        query = (
+            "SELECT e.source_version_id,e.byte_start,e.event_id,n.field_name,n.raw_value,n.value_int,n.state,n.unit,n.reason_code "
+            "FROM events e JOIN numeric_values n ON n.event_id=e.event_id "
+            f"WHERE e.event_type IN ({placeholders}) "
+            "ORDER BY e.source_version_id,e.byte_start,n.field_name"
+        )
+        current_key = None
+        current_values = None
+        for row in self.connection.execute(query, tuple(event_types)):
+            key = (row["source_version_id"], row["byte_start"], row["event_id"])
+            if key != current_key:
+                if current_key is not None:
+                    yield current_key, current_values
+                current_key, current_values = key, {}
+            current_values[row["field_name"]] = {
+                "state": row["state"], "raw_value": row["raw_value"], "value": row["value_int"],
+                "unit": row["unit"], "reason": row["reason_code"],
+            }
+        if current_key is not None:
+            yield current_key, current_values
+
     def db_rows(self, include_sql=False):
         query = "SELECT o.*"
         if include_sql:
             query += ",t.sql_text,p.normalized_sql FROM db_observations o LEFT JOIN sql_texts t USING(sql_text_id) LEFT JOIN sql_patterns p USING(pattern_id)"
         else:
             query += " FROM db_observations o"
+        numeric_groups = iter(self._db_numeric_groups())
+        numeric_group = next(numeric_groups, None)
         for row in self.connection.execute(query + " ORDER BY o.source_version_id,o.byte_start"):
+            row_key = (row["source_version_id"], row["byte_start"], row["event_id"])
+            if numeric_group is not None and numeric_group[0] < row_key:
+                raise ValueError("DB numeric stream is not aligned with DB observations")
             result = dict(row)
-            result["numeric_quality"] = self.numeric(row["event_id"])
+            if numeric_group is not None and numeric_group[0] == row_key:
+                result["numeric_quality"] = numeric_group[1]
+                numeric_group = next(numeric_groups, None)
+            else:
+                result["numeric_quality"] = {}
             result.update({key: value["value"] for key, value in result["numeric_quality"].items()})
             result["start_timestamp"] = str(timestamp(row["start_time_us"])) if row["start_time_us"] is not None else None
             result["end_timestamp"] = str(timestamp(row["end_time_us"])) if row["end_time_us"] is not None else None
             yield result
+        if numeric_group is not None:
+            raise ValueError("DB numeric stream contains an event outside DB observations")
 
     def finish(self, health, source_map, output: Path):
         for item in health:

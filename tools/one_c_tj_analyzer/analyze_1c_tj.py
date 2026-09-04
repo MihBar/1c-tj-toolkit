@@ -919,7 +919,18 @@ def analyze_pass_two(
         if call.start is None or call.end is None:
             stats["calls_without_absolute_time"] += 1
 
+    auxiliary_types = ("SDBL", "TLOCK", "TTIMEOUT", "TDEADLOCK")
+    numeric_groups = iter(store._event_numeric_groups(auxiliary_types))
+    numeric_group = next(numeric_groups, None)
     for row in store.connection.execute("SELECT * FROM events WHERE event_type IN ('SDBL','TLOCK','TTIMEOUT','TDEADLOCK') ORDER BY source_version_id,byte_start"):
+        row_key = (row["source_version_id"], row["byte_start"], row["event_id"])
+        if numeric_group is not None and numeric_group[0] < row_key:
+            raise ValueError("Auxiliary numeric stream is not aligned with stored events")
+        if numeric_group is not None and numeric_group[0] == row_key:
+            numeric = numeric_group[1]
+            numeric_group = next(numeric_groups, None)
+        else:
+            numeric = {}
         event, user, timestamp = row["event_type"], row["user"], stored_timestamp(row["end_time_us"])
         measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
         stats = linkage.setdefault((dataset_id, measurement_id), fresh_linkage(measurement_id, dataset_id))
@@ -955,7 +966,7 @@ def analyze_pass_two(
             if group is None:
                 group = LockGroup(event=event)
                 lock_groups[lock_key] = group
-            group.add(duration_us, store.numeric(row["event_id"]))
+            group.add(duration_us, numeric)
             group.users.add(user)
             if context and len(group.contexts) < 30:
                 group.contexts.add(context)
@@ -965,6 +976,8 @@ def analyze_pass_two(
                 linked_call.lock_duration_us += duration_us
         if progress is not None:
             progress.advance(1)
+    if numeric_group is not None:
+        raise ValueError("Auxiliary numeric stream contains an event outside stored event order")
     calls_by_id = {call.call_id: call for call in calls}
     for row in store.db_rows(include_sql=True):
         measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
