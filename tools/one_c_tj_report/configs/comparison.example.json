@@ -1,0 +1,20 @@
+{
+  "report_config_version": "1.0",
+  "report_kind": "comparison",
+  "title": "Сравнение сохранённых замеров",
+  "locale": "ru-RU",
+  "report_date": "2026-09-03",
+  "sections": ["provenance", "quality", "comparisons", "db_chatty_comparison", "apdex_changes", "problem_views"],
+  "tables": {
+    "measurement_comparisons": {"sort": [{"field": "p95_us_delta_absolute", "direction": "desc"}], "top_n": 2},
+    "db_chatty_changes": {"sort": [{"field": "db_per_call_avg_delta_absolute", "direction": "desc"}], "top_n": 2},
+    "apdex_changes": {"sort": [{"field": "apdex_delta_absolute", "direction": "asc"}], "top_n": 2},
+    "problem_improved": {"top_n": 4},
+    "problem_persisting": {"top_n": 4},
+    "problem_worsened": {"top_n": 4},
+    "problem_new": {"top_n": 4},
+    "problem_unchecked": {"top_n": 4}
+  },
+  "format": {"digits": 3, "duration": "s", "volume": "MiB", "show_paths": false, "show_sql": false},
+  "fonts": {"profile": "liberation-sans"}
+}

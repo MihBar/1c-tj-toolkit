@@ -1,0 +1,20 @@
+{
+  "report_config_version": "1.0",
+  "report_kind": "overview",
+  "title": "Обзор сохранённых результатов анализа",
+  "locale": "ru-RU",
+  "report_date": "2026-09-03",
+  "sections": ["provenance", "sources", "quality", "operations", "sql", "errors", "locks", "db_chatty_summary", "apdex", "apdex_overall", "problems"],
+  "tables": {
+    "operations": {"sort": [{"field": "p95_us", "direction": "desc"}], "top_n": 3},
+    "heavy_sql": {"sort": [{"field": "duration_us", "direction": "desc"}], "top_n": 3},
+    "errors": {"sort": [{"field": "event_count", "direction": "desc"}], "top_n": 3},
+    "locks": {"sort": [{"field": "duration_us", "direction": "desc"}], "top_n": 3},
+    "db_chatty": {"sort": [{"field": "db_per_call_avg", "direction": "desc"}], "top_n": 3},
+    "apdex": {"sort": [{"field": "apdex", "direction": "asc"}], "top_n": 3},
+    "apdex_overall": {"sort": [{"field": "apdex_denominator", "direction": "desc"}], "top_n": 1},
+    "problem_registry": {"top_n": 5}
+  },
+  "format": {"digits": 3, "duration": "s", "volume": "MiB", "show_paths": false, "show_sql": true},
+  "fonts": {"profile": "liberation-sans"}
+}

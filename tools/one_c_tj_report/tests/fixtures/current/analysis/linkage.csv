@@ -1,0 +1,4 @@
+﻿measurement_id,dataset_id,call_count,calls_without_absolute_time,dbpostgrs_total_count,dbpostgrs_linked_count,dbpostgrs_linked_count_percent,dbpostgrs_total_duration_us,dbpostgrs_linked_duration_us,dbpostgrs_linked_duration_percent,sdbl_total_count,sdbl_linked_count,sdbl_linked_count_percent,lock_total_count,lock_linked_count,lock_linked_count_percent,error_total_count,error_linked_count,error_linked_count_percent,unlinked_missing_timestamp,unlinked_missing_thread,unlinked_no_containing_call
+capture@2026-09-01,capture,4,0,4,4,100.0,400,400,100.0,0,0,,0,0,,0,0,,0,0,0
+capture@2026-09-02,capture,2,0,2,2,100.0,200,200,100.0,0,0,,0,0,,0,0,,0,0,0
+capture@2026-09-03,capture,2,0,2,2,100.0,200,200,100.0,0,0,,0,0,,0,0,,0,0,0

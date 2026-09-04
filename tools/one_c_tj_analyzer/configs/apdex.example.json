@@ -1,0 +1,30 @@
+{
+  "config_version": "1.0",
+  "slices": [
+    "data_quality",
+    "apdex",
+    "apdex_calls",
+    "apdex_uncovered",
+    "apdex_coverage",
+    "apdex_overall",
+    "apdex_composition",
+    "apdex_changes"
+  ],
+  "measurement_ids": null,
+  "expected_bundle_id": null,
+  "operations": {
+    "series_baseline_measurement_id": null,
+    "measurement_order": null,
+    "min_comparison_count": 10
+  },
+  "apdex": {
+    "targets": [],
+    "classes": [],
+    "min_call_count": 10,
+    "failure_policy": "latency_only",
+    "confirmed_failures": {
+      "bundle_id": null,
+      "calls": []
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "config_version": "1.0",
+  "slices": ["data_quality"],
+  "measurement_ids": null,
+  "expected_bundle_id": null,
+  "data_quality": {
+    "min_call_count": 10,
+    "db_linkage_warning_percent": 99
+  }
+}

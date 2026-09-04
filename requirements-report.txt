@@ -1,0 +1,3 @@
+# Only PDF report generators require this package; core analysis uses the standard library.
+# Version used for the initial baseline.
+reportlab==4.4.9

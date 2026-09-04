@@ -1,0 +1,130 @@
+{
+  "config_version": "1.0",
+  "slices": [
+    "data_quality",
+    "operation_history",
+    "operation_history_all_users",
+    "measurement_comparisons",
+    "comparability",
+    "db_chatty",
+    "db_chatty_calls",
+    "db_chatty_fast_calls",
+    "db_chatty_duration",
+    "db_chatty_coverage",
+    "db_chatty_changes",
+    "apdex",
+    "apdex_calls",
+    "apdex_uncovered",
+    "apdex_coverage",
+    "apdex_overall",
+    "apdex_composition",
+    "apdex_changes",
+    "problem_registry",
+    "problem_history",
+    "problem_improved",
+    "problem_persisting",
+    "problem_worsened",
+    "problem_new",
+    "problem_unchecked",
+    "problem_rule_coverage"
+  ],
+  "measurement_ids": null,
+  "expected_bundle_id": null,
+  "problems": {
+    "series_id": "1c_measurements_2026",
+    "rules": [
+      {
+        "rule_id": "call_p95_above_10s",
+        "metric": "operation.p95_us",
+        "operator": ">",
+        "threshold": 10000000,
+        "min_call_count": 10,
+        "source": "Предлагаемый диагностический порог p95; не согласованный SLA"
+      },
+      {
+        "rule_id": "call_max_above_30s",
+        "metric": "operation.max_us",
+        "operator": ">",
+        "threshold": 30000000,
+        "min_call_count": 1,
+        "source": "Предлагаемый порог единичной задержки; не диагноз причины"
+      },
+      {
+        "rule_id": "db_mean_above_500",
+        "metric": "operation.db_per_call",
+        "operator": ">",
+        "threshold": 500,
+        "min_call_count": 10,
+        "source": "Предлагаемый диагностический профиль DB/CALL; не норматив избыточности"
+      },
+      {
+        "rule_id": "db_single_call_above_1000",
+        "metric": "db_chatty.db_per_call_max",
+        "db_events_threshold": 1000,
+        "operator": ">",
+        "threshold": 1000,
+        "min_call_count": 1,
+        "source": "Предлагаемый отбор отдельных высокоплотных CALL; не диагноз N+1"
+      },
+      {
+        "rule_id": "db_actual_calls_above_500",
+        "metric": "db_chatty.calls_above_threshold_count",
+        "db_events_threshold": 500,
+        "operator": ">",
+        "threshold": 0,
+        "min_call_count": 1,
+        "source": "Хотя бы один зарегистрированный CALL с DB>500; диагностический профиль"
+      },
+      {
+        "rule_id": "response_mean_above_10MiB",
+        "metric": "operation.out_bytes_per_call",
+        "operator": ">",
+        "threshold": 10485760,
+        "min_call_count": 3,
+        "source": "Предлагаемый порог объёма ответа; нули старой схемы могут быть неоднозначны"
+      },
+      {
+        "rule_id": "apdex_deficit_above_015",
+        "metric": "apdex.deficit",
+        "operator": ">",
+        "threshold": 0.15,
+        "min_call_count": 10,
+        "source": "Предлагаемый APDEX<0.85 при явно заданном T; без T не оценивается и не считается SLA"
+      }
+    ]
+  },
+  "data_quality": {
+    "min_call_count": 10,
+    "db_linkage_warning_percent": 99
+  },
+  "operations": {
+    "series_baseline_measurement_id": null,
+    "measurement_order": null,
+    "min_comparison_count": 10
+  },
+  "db_chatty": {
+    "thresholds": [
+      100,
+      500,
+      1000,
+      5000
+    ],
+    "duration_bounds_seconds": [
+      1,
+      5,
+      10,
+      30
+    ],
+    "fast_call_max_seconds": 1
+  },
+  "apdex": {
+    "targets": [],
+    "classes": [],
+    "min_call_count": 10,
+    "failure_policy": "latency_only",
+    "confirmed_failures": {
+      "bundle_id": null,
+      "calls": []
+    }
+  }
+}

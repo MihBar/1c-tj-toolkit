@@ -1,0 +1,15 @@
+{
+  "report_config_version": "1.0",
+  "report_kind": "history",
+  "title": "История сохранённых замеров",
+  "locale": "ru-RU",
+  "report_date": "2026-09-03",
+  "sections": ["provenance", "quality", "operations", "operations_all_users", "problem_history"],
+  "tables": {
+    "operation_history": {"sort": [{"field": "p95_us", "direction": "desc"}], "top_n": 2},
+    "operation_history_all_users": {"sort": [{"field": "p95_us", "direction": "desc"}], "top_n": 2},
+    "problem_history": {"top_n": 2}
+  },
+  "format": {"digits": 3, "duration": "s", "volume": "MiB", "show_paths": false, "show_sql": false},
+  "fonts": {"profile": "liberation-sans"}
+}

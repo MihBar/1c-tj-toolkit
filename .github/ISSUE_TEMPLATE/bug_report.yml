@@ -1,0 +1,81 @@
+name: Сообщить об ошибке
+description: Воспроизводимая ошибка на синтетических или обезличенных данных
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Не прикладывайте реальные ТЖ, результаты анализа, SQLite, JSON, CSV или PDF с конфиденциальными данными. Об уязвимостях сообщайте приватно по SECURITY.md.
+  - type: checkboxes
+    id: preliminary_checks
+    attributes:
+      label: Предварительная проверка
+      options:
+        - label: Я проверил существующие issues и не нашёл такого сообщения
+          required: true
+        - label: Это не сообщение об уязвимости безопасности
+          required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Компонент
+      options:
+        - Анализатор ТЖ
+        - Верификатор анализа
+        - Расчётчик или проверка срезов
+        - PDF-модуль
+        - Документация
+        - Другое
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия или commit
+      description: Укажите версию компонента или hash коммита.
+      placeholder: "Например: analyzer 1.6.1, commit abc1234"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Среда
+      description: Операционная система и версия Python.
+      placeholder: "Например: Windows 11, Python 3.12.13"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что произошло
+      description: Опишите наблюдаемое поведение и его влияние.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Минимальное воспроизведение
+      description: Приведите команды и синтетические входные данные без клиентских идентификаторов и секретов.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Дополнительная диагностика
+      description: Добавляйте только обезличенные фрагменты сообщений и никогда не прикладывайте полный реальный комплект.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Конфиденциальность
+      options:
+        - label: Я проверил сообщение и вложения; они не содержат реальных ТЖ, клиентских данных, внутренних адресов, путей или секретов
+          required: true

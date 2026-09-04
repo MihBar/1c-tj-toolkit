@@ -1,0 +1,2 @@
+# Preserve exact producer bytes; Windows CRLF is an intentional line ending.
+current/** -text whitespace=cr-at-eol

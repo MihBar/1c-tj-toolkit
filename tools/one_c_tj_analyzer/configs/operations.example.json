@@ -1,0 +1,21 @@
+{
+  "config_version": "1.0",
+  "slices": [
+    "data_quality",
+    "operation_history",
+    "operation_history_all_users",
+    "measurement_comparisons",
+    "comparability"
+  ],
+  "measurement_ids": null,
+  "expected_bundle_id": null,
+  "data_quality": {
+    "min_call_count": 10,
+    "db_linkage_warning_percent": 99
+  },
+  "operations": {
+    "series_baseline_measurement_id": null,
+    "measurement_order": null,
+    "min_comparison_count": 10
+  }
+}

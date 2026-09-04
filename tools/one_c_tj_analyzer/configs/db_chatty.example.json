@@ -1,0 +1,28 @@
+{
+  "config_version": "1.0",
+  "slices": [
+    "data_quality",
+    "db_chatty",
+    "db_chatty_calls",
+    "db_chatty_fast_calls",
+    "db_chatty_duration",
+    "db_chatty_coverage",
+    "db_chatty_changes"
+  ],
+  "measurement_ids": null,
+  "expected_bundle_id": null,
+  "data_quality": {
+    "min_call_count": 10,
+    "db_linkage_warning_percent": 99
+  },
+  "operations": {
+    "series_baseline_measurement_id": null,
+    "measurement_order": null,
+    "min_comparison_count": 10
+  },
+  "db_chatty": {
+    "thresholds": [100, 500, 1000, 5000],
+    "duration_bounds_seconds": [1, 5, 10, 30],
+    "fast_call_max_seconds": 1
+  }
+}
