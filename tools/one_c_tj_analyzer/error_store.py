@@ -17,7 +17,7 @@ ERROR_EXPORTS = (
 
 def link_errors(store):
     connection = store.connection
-    connection.commit()
+    store.commit()
     for event in connection.execute("SELECT e.*,r.raw_message,r.message_state FROM events e JOIN error_events r USING(event_id) ORDER BY e.event_id"):
         candidate_rows = candidates(connection, event)
         decision = error_decision(connection, event, candidate_rows)
@@ -36,7 +36,7 @@ def link_errors(store):
         store.tick()
         if store.on_error_link is not None:
             store.on_error_link(1)
-    connection.commit()
+    store.commit()
 
 
 def error_rows(connection):

@@ -65,6 +65,8 @@ class EventStore:
         self.connection.executescript(Path(__file__).with_name("event_schema.sql").read_text(encoding="utf-8"))
         self.connection.executescript(Path(__file__).with_name("error_schema.sql").read_text(encoding="utf-8"))
         self.pending = 0
+        self._sql_text_ids = set()
+        self._pending_sql_text_ids = set()
         self.on_db_link = None
         self.on_error_link = None
         for key, value in {**VERSIONS, **ERROR_METADATA, "linkage_rules": LINKAGE_RULES, "publication_state": "building"}.items():
@@ -73,8 +75,12 @@ class EventStore:
     def tick(self):
         self.pending += 1
         if self.pending >= 1000:
-            self.connection.commit()
+            self.commit()
             self.pending = 0
+
+    def commit(self):
+        self.connection.commit()
+        self._pending_sql_text_ids.clear()
 
     def add_sources(self, health):
         for item in health:
@@ -145,6 +151,16 @@ class EventStore:
         text_id = None
         if sql:
             text_id = identity("sql-text/v1", sql)
+            # A transaction ended directly through the exposed connection. Its
+            # pending SQL may have been committed or rolled back, so recheck it
+            # lazily. Direct DML of SQL dictionary tables, or starting another
+            # transaction before this check, remains unsupported; the analyzer
+            # itself commits only through EventStore and never rolls back/reuses.
+            if self._pending_sql_text_ids and not self.connection.in_transaction:
+                self._sql_text_ids.difference_update(self._pending_sql_text_ids)
+                self._pending_sql_text_ids.clear()
+            if text_id in self._sql_text_ids:
+                return text_id
             if self.connection.execute("SELECT 1 FROM sql_texts WHERE sql_text_id=?", (text_id,)).fetchone() is None:
                 normalized = normalize_sql(sql)
                 fingerprint = sql_fingerprint(normalized)
@@ -156,10 +172,12 @@ class EventStore:
                        "normalized_sql": normalized, "sql_fingerprint_sha256": fingerprint, "normalization_status": status}, ignore=True)
                 insert(self.connection, "sql_normalizations", {"sql_text_id": text_id, "normalization_version": SQL_NORMALIZATION_VERSION,
                        "pattern_id": pattern_id, "state": status})
+                self._pending_sql_text_ids.add(text_id)
+            self._sql_text_ids.add(text_id)
         return text_id
 
     def link_db(self):
-        self.connection.commit()
+        self.commit()
         for event in self.connection.execute("SELECT e.* FROM events e JOIN db_events d USING(event_id) ORDER BY e.event_id"):
             candidate_rows = candidates(self.connection, event)
             decision = decide(self.connection, event, candidate_rows)
@@ -169,7 +187,7 @@ class EventStore:
             self.tick()
             if self.on_db_link is not None:
                 self.on_db_link(1)
-        self.connection.commit()
+        self.commit()
 
     def numeric(self, event_id):
         return {r["field_name"]: {"state": r["state"], "raw_value": r["raw_value"], "value": r["value_int"],
@@ -253,7 +271,7 @@ class EventStore:
                 self.connection.execute("UPDATE source_versions SET status=?,analyzed_bytes=? WHERE source_version_id=?",
                                         (item.status, item.analyzed_bytes, item.source.version_id))
         self.connection.execute("UPDATE metadata SET value=? WHERE key='publication_state'", (canonical("complete"),))
-        self.connection.commit()
+        self.commit()
         if self.connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or self.connection.execute("PRAGMA foreign_key_check").fetchone():
             raise ValueError("Event store integrity check failed")
         db_fields = [r[1] for r in self.connection.execute("PRAGMA table_info(db_observations)")]
@@ -276,6 +294,8 @@ class EventStore:
         if self.connection is not None:
             self.connection.close()
             self.connection = None
+        self._sql_text_ids.clear()
+        self._pending_sql_text_ids.clear()
 
 
 def export_csv(path, fields, rows):
