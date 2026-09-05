@@ -8,6 +8,7 @@ from slice_operations import OperationSeries, UNKNOWN_PARAMETERS, UNKNOWN_USER_V
 from slice_db_chatty import ChattySeries
 from slice_apdex import ApdexSeries
 from slice_problem_config import METRICS
+from slice_context import family_rows
 
 EXCEEDED = "порог превышен"
 DECREASED = "показатель снизился"
@@ -65,17 +66,23 @@ RULE_COVERAGE_FIELDS = (
 
 
 class ProblemSeries:
-    def __init__(self, bundle, config):
+    def __init__(self, bundle, config, *, context=None):
         self.bundle = bundle
         self.config = config
         self.cfg = config["problems"]
         if not self.cfg["rules"]:
             raise SliceError("Problem slices require explicit nonempty problems.rules and series_id")
-        self.series = OperationSeries(bundle, config)
+        if context is not None:
+            context._validate(bundle, config)
+        self.series = OperationSeries(bundle, config) if context is None else context._get_operations()
         if not self.series.reliable:
             raise SliceError("Problem history requires reliable chronology; provide operations.measurement_order explicitly")
-        self.db = ChattySeries(bundle, config) if any(r["metric"].startswith("db_chatty.") for r in self.cfg["rules"]) else None
-        self.apdex = ApdexSeries(bundle, config) if any(r["metric"].startswith("apdex.") for r in self.cfg["rules"]) else None
+        self.db = None
+        if any(r["metric"].startswith("db_chatty.") for r in self.cfg["rules"]):
+            self.db = ChattySeries(bundle, config) if context is None else context._get_chatty()
+        self.apdex = None
+        if any(r["metric"].startswith("apdex.") for r in self.cfg["rules"]):
+            self.apdex = ApdexSeries(bundle, config) if context is None else context._get_apdex()
         self.rule_pairs = {}
         known_users = {c["user"] for c in bundle.calls}
         for rule in self.cfg["rules"]:
@@ -266,34 +273,62 @@ class ProblemSeries:
         return registry, history, coverage
 
 
-def problem_registry(bundle, config):
-    return ProblemSeries(bundle, config).build()[0]
+def problem_registry(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_registry", context)
 
 
-def problem_history(bundle, config):
-    return ProblemSeries(bundle, config).build()[1]
+def _problem_registry(tables):
+    return tables[0]
 
 
-def problem_rule_coverage(bundle, config):
-    return ProblemSeries(bundle, config).build()[2]
+def problem_history(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_history", context)
 
 
-def problem_persisting(bundle, config):
-    return [r for r in problem_registry(bundle, config) if r["threshold_status"] == EXCEEDED]
+def _problem_history(tables):
+    return tables[1]
 
 
-def problem_unchecked(bundle, config):
-    return [r for r in problem_registry(bundle, config) if r["historical_without_latest_check"]]
+def problem_rule_coverage(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_rule_coverage", context)
 
 
-def problem_new(bundle, config):
+def _problem_rule_coverage(tables):
+    return tables[2]
+
+
+def problem_persisting(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_persisting", context)
+
+
+def _problem_persisting(tables):
+    return [r for r in tables[0] if r["threshold_status"] == EXCEEDED]
+
+
+def problem_unchecked(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_unchecked", context)
+
+
+def _problem_unchecked(tables):
+    return [r for r in tables[0] if r["historical_without_latest_check"]]
+
+
+def problem_new(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_new", context)
+
+
+def _problem_new(tables):
     # Discovery chronology includes first-measurement baseline problems AND later additions.
-    return [r for r in problem_history(bundle, config) if r["is_first_problem_observation"]]
+    return [r for r in tables[1] if r["is_first_problem_observation"]]
 
 
-def transitions(bundle, config, direction):
+def transitions(bundle, config, direction, *, context=None):
+    return _transitions(problem_history(bundle, config, context=context), direction)
+
+
+def _transitions(history, direction):
     result = []
-    for row in problem_history(bundle, config):
+    for row in history:
         for basis, prefix in (("first_problem", "first_problem_"), ("previous_comparable", "previous_comparable_")):
             if row[prefix + "change_direction"] != direction:
                 continue
@@ -306,9 +341,17 @@ def transitions(bundle, config, direction):
     return result
 
 
-def problem_improved(bundle, config):
-    return transitions(bundle, config, "decreased")
+def problem_improved(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_improved", context)
 
 
-def problem_worsened(bundle, config):
-    return transitions(bundle, config, "increased")
+def _problem_improved(tables):
+    return _transitions(tables[1], "decreased")
+
+
+def problem_worsened(bundle, config, *, context=None):
+    return family_rows(bundle, config, "problem_worsened", context)
+
+
+def _problem_worsened(tables):
+    return _transitions(tables[1], "increased")

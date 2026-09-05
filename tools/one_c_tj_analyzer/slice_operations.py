@@ -11,6 +11,7 @@ import statistics
 from slice_config import SliceError, canonical_json, digest_bytes
 from slice_input import Bundle, nearest_rank, timestamp
 from numeric_quality import available_stats, counter_summaries, cpu_population
+from slice_context import operation_rows
 
 TIME_THRESHOLDS_SECONDS = (1, 5, 10, 30)
 METRIC_FIELDS = (
@@ -284,18 +285,27 @@ class OperationSeries:
                     yield common, before, after
 
 
-def operation_history(bundle: Bundle, config: dict) -> list[dict]:
-    series = OperationSeries(bundle, config)
+def operation_history(bundle: Bundle, config: dict, *, context=None) -> list[dict]:
+    return operation_rows(bundle, config, _operation_history, context)
+
+
+def _operation_history(series):
     return [series.history(sig, user, mid) for sig, user in series.pairs for mid in series.selected]
 
 
-def operation_history_all_users(bundle: Bundle, config: dict) -> list[dict]:
-    series = OperationSeries(bundle, config)
+def operation_history_all_users(bundle: Bundle, config: dict, *, context=None) -> list[dict]:
+    return operation_rows(bundle, config, _operation_history_all_users, context)
+
+
+def _operation_history_all_users(series):
     return [series.history(sig, None, mid) for sig in series.signatures for mid in series.selected]
 
 
-def measurement_comparisons(bundle: Bundle, config: dict) -> list[dict]:
-    series = OperationSeries(bundle, config)
+def measurement_comparisons(bundle: Bundle, config: dict, *, context=None) -> list[dict]:
+    return operation_rows(bundle, config, _measurement_comparisons, context)
+
+
+def _measurement_comparisons(series):
     rows = []
     for common, before, after in series.comparisons():
         row = dict(common)
@@ -320,8 +330,11 @@ def measurement_comparisons(bundle: Bundle, config: dict) -> list[dict]:
     return rows
 
 
-def comparability(bundle: Bundle, config: dict) -> list[dict]:
-    series = OperationSeries(bundle, config)
+def comparability(bundle: Bundle, config: dict, *, context=None) -> list[dict]:
+    return operation_rows(bundle, config, _comparability, context)
+
+
+def _comparability(series):
     rows = []
     for common, before, after in series.comparisons():
         reference = common["reference_measurement_id"]

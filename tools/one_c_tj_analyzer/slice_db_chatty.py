@@ -1,6 +1,8 @@
 """Diagnostic DB-event density from retained individual CALLs; never SQL/N+1 inference."""
 from __future__ import annotations
 
+from slice_context import family_rows
+
 import collections
 import statistics
 
@@ -120,8 +122,8 @@ def profile(calls: list[dict], threshold: int, fast_us: int) -> dict:
 
 
 class ChattySeries:
-    def __init__(self, bundle, config):
-        self.series = OperationSeries(bundle, config)
+    def __init__(self, bundle, config, *, series=None):
+        self.series = OperationSeries(bundle, config) if series is None else series
         self.bundle = bundle
         self.config = config
         cfg = config["db_chatty"]
@@ -167,12 +169,20 @@ class ChattySeries:
                  "source_health": self.series.quality[mid]["recorded_source_health"]} for mid in mids]
 
 
-def db_chatty(bundle, config):
-    return list(ChattySeries(bundle, config).groups())
+def db_chatty(bundle, config, *, context=None):
+    return family_rows(bundle, config, "db_chatty", context)
 
 
-def db_chatty_calls(bundle, config):
-    data = ChattySeries(bundle, config)
+def _db_chatty(data):
+    return list(data.groups())
+
+
+def db_chatty_calls(bundle, config, *, context=None):
+    return family_rows(bundle, config, "db_chatty_calls", context)
+
+
+def _db_chatty_calls(data):
+    bundle = data.bundle
     rows = []
     for sig, user in data.series.pairs:
         for mid in data.series.selected:
@@ -198,13 +208,16 @@ def db_chatty_calls(bundle, config):
     return rows
 
 
-def db_chatty_fast_calls(bundle, config):
+def db_chatty_fast_calls(bundle, config, *, context=None):
     """An explicit overlapping view of the actual fast CALL exceedances."""
-    return [row for row in db_chatty_calls(bundle, config) if row["is_fast_call"]]
+    return family_rows(bundle, config, "db_chatty_fast_calls", context)
 
 
-def db_chatty_duration(bundle, config):
-    data = ChattySeries(bundle, config)
+def db_chatty_duration(bundle, config, *, context=None):
+    return family_rows(bundle, config, "db_chatty_duration", context)
+
+
+def _db_chatty_duration(data):
     rows = []
     for group in data.groups():
         if not group["count"]:
@@ -230,8 +243,12 @@ def db_chatty_duration(bundle, config):
     return rows
 
 
-def db_chatty_coverage(bundle, config):
-    data = ChattySeries(bundle, config)
+def db_chatty_coverage(bundle, config, *, context=None):
+    return family_rows(bundle, config, "db_chatty_coverage", context)
+
+
+def _db_chatty_coverage(data):
+    bundle = data.bundle
     by_measurement = collections.defaultdict(list)
     for call in bundle.calls:
         by_measurement[call["measurement_id"]].append(call)
@@ -292,8 +309,11 @@ def db_chatty_coverage(bundle, config):
     return rows
 
 
-def db_chatty_changes(bundle, config):
-    data = ChattySeries(bundle, config)
+def db_chatty_changes(bundle, config, *, context=None):
+    return family_rows(bundle, config, "db_chatty_changes", context)
+
+
+def _db_chatty_changes(data):
     rows = []
     for common, before, after in data.series.comparisons():
         if common["comparison_basis"] not in {"first_observation", "previous_observation"}:

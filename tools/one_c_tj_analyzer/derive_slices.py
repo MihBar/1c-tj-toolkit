@@ -13,6 +13,7 @@ import tempfile
 from slice_config import CALCULATOR_VERSION, SLICE_SCHEMA_VERSION, REGISTERED_SLICES, SliceError, canonical_json, digest_bytes, load_config, strict_json
 from slice_input import load_bundle, require
 from slice_metrics import SLICE_BUILDERS
+from slice_context import CONTEXT_SLICES, SliceCalculationContext
 
 CALCULATOR_NAME = "1c_tj_saved_result_slices"
 MANIFEST_NAME = "slice_manifest.json"
@@ -110,12 +111,20 @@ def run(argv: list[str] | None = None) -> dict:
         validate_output_path(output, bundle.root, config_path, args.overwrite, config["slices"])
     outputs = {}
     descriptors = {}
-    for name in config["slices"]:
-        fields, builder = SLICE_BUILDERS[name]
-        rows = builder(bundle, config)
-        data = csv_bytes(fields, rows)
-        outputs[name + ".csv"] = data
-        descriptors[name + ".csv"] = {"sha256": digest_bytes(data), "size_bytes": len(data), "row_count": len(rows), "columns": fields}
+    with SliceCalculationContext(bundle, config) as context:
+        remaining = set(config["slices"])
+        for name in config["slices"]:
+            fields, builder = SLICE_BUILDERS[name]
+            # csv_bytes only reads rows. Public builders still return independent
+            # deep copies; the internal exporter need not duplicate whole tables.
+            rows = context._export_rows(name) if name in CONTEXT_SLICES else builder(bundle, config)
+            data = csv_bytes(fields, rows)
+            if not args.validate_only:
+                outputs[name + ".csv"] = data
+            descriptors[name + ".csv"] = {"sha256": digest_bytes(data), "size_bytes": len(data), "row_count": len(rows), "columns": fields}
+            del rows, data
+            remaining.remove(name)
+            context._release_completed(remaining)
     bundle.assert_unchanged()
     require(digest_bytes(config_path.read_bytes()) == config_file_hash, "Configuration changed during calculation")
     summary = {

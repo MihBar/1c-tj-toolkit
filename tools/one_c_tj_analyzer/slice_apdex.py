@@ -1,6 +1,8 @@
 """APDEX of retained server CALLs with explicit targets, policy and composition."""
 from __future__ import annotations
 
+from slice_context import family_rows
+
 from slice_config import SliceError, seconds_to_us
 from slice_apdex_config import TARGET_STATUSES
 from slice_operations import COMPARISON_COMMON, OperationSeries, UNKNOWN_PARAMETERS, UNKNOWN_USER_VALUES, stable_id
@@ -104,10 +106,10 @@ def score(calls, t_us, confirmed):
 
 
 class ApdexSeries:
-    def __init__(self, bundle, config):
+    def __init__(self, bundle, config, *, series=None):
         self.bundle = bundle
         self.config = config
-        self.series = OperationSeries(bundle, config)
+        self.series = OperationSeries(bundle, config) if series is None else series
         cfg = config["apdex"]
         self.minimum = cfg["min_call_count"]
         self.policy = cfg["failure_policy"]
@@ -219,16 +221,24 @@ class ApdexSeries:
         return overall, composition
 
 
-def apdex(bundle, config):
-    return ApdexSeries(bundle, config).groups()
+def apdex(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex", context)
 
 
-def apdex_uncovered(bundle, config):
-    return [g for g in ApdexSeries(bundle, config).groups() if g["t_us"] is None and g["count"]]
+def _apdex(data):
+    return data.groups()
 
 
-def apdex_calls(bundle, config):
-    data = ApdexSeries(bundle, config)
+def apdex_uncovered(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_uncovered", context)
+
+
+def apdex_calls(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_calls", context)
+
+
+def _apdex_calls(data):
+    bundle = data.bundle
     rows = []
     for sig, user in data.series.pairs:
         target = data.targets[sig]
@@ -250,8 +260,12 @@ def apdex_calls(bundle, config):
     return rows
 
 
-def apdex_coverage(bundle, config):
-    data = ApdexSeries(bundle, config)
+def apdex_coverage(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_coverage", context)
+
+
+def _apdex_coverage(data):
+    bundle, config = data.bundle, data.config
     groups = data.groups()
     rows = []
     for scope, mids in data.scopes():
@@ -279,16 +293,20 @@ def apdex_coverage(bundle, config):
     return rows
 
 
-def apdex_overall(bundle, config):
-    return ApdexSeries(bundle, config).overall_tables()[0]
+def apdex_overall(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_overall", context)
 
 
-def apdex_composition(bundle, config):
-    return ApdexSeries(bundle, config).overall_tables()[1]
+def apdex_composition(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_composition", context)
 
 
-def apdex_changes(bundle, config):
-    data = ApdexSeries(bundle, config)
+def apdex_changes(bundle, config, *, context=None):
+    return family_rows(bundle, config, "apdex_changes", context)
+
+
+def _apdex_changes(data):
+    config = data.config
     rows = []
     for common, before, after in data.series.comparisons():
         current = data.group(common["signature"], common["user"], common["current_measurement_id"])
