@@ -8,7 +8,8 @@ import json
 from pathlib import Path
 import sqlite3
 
-from event_linking import LINKAGE_RULES, LINKAGE_RULES_VERSION, candidates, decide, candidate_evidence
+from event_linking import LINKAGE_RULES, LINKAGE_RULES_VERSION
+from stored_linking import stored_links
 from numeric_quality import FIELDS, NUMERIC_RULES_VERSION
 from record_stream import PARSER_VERSION
 from source_identity import SOURCE_IDENTITY_VERSION, EVENT_IDENTITY_VERSION, identity, canonical, file_hash
@@ -178,12 +179,11 @@ class EventStore:
 
     def link_db(self):
         self.commit()
-        for event in self.connection.execute("SELECT e.* FROM events e JOIN db_events d USING(event_id) ORDER BY e.event_id"):
-            candidate_rows = candidates(self.connection, event)
-            decision = decide(self.connection, event, candidate_rows)
+        for event, decision, evidence in stored_links(self.connection, "db"):
             insert(self.connection, "link_decisions", decision)
-            for candidate in candidate_evidence(self.connection, event, decision, candidate_rows):
+            for candidate in evidence:
                 insert(self.connection, "link_candidates", candidate)
+                self.tick()
             self.tick()
             if self.on_db_link is not None:
                 self.on_db_link(1)

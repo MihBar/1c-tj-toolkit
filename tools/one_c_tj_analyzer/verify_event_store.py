@@ -12,7 +12,8 @@ from event_store import DETAIL_FILES, CALL_DETAIL_FIELDS, VERSIONS, LEGACY_VERSI
 from error_rules import ERROR_METADATA
 from verify_error_store import verify_errors
 from verify_populations import identities, source_coverage, verify_populations
-from event_linking import LINKAGE_RULES, candidates, decide, candidate_evidence
+from event_linking import LINKAGE_RULES
+from stored_linking import stored_links, verify_candidates
 from numeric_quality import FIELDS, CounterStats, parse_counter
 from source_identity import identity, canonical, file_hash
 from sql_normalization import SQL_NORMALIZATION_VERSION, normalize_sql, sql_fingerprint, normalization_status
@@ -134,14 +135,14 @@ def verify_detail(root, manifest, calls):
         db_count = connection.execute("SELECT count(*) FROM db_events").fetchone()[0]
         require(db_count == connection.execute("SELECT count(*) FROM link_decisions").fetchone()[0] == manifest["counts"]["db_observations"], "missing DB events/decisions")
         per_call, per_link, per_sql = defaultdict(lambda: [0, 0, CounterStats()]), defaultdict(lambda: [0, 0, 0, 0]), defaultdict(lambda: [0, 0])
-        for event in connection.execute("SELECT e.* FROM events e JOIN db_events USING(event_id) ORDER BY e.event_id"):
-            candidate_rows = candidates(connection, event)
-            expected = decide(connection, event, candidate_rows)
+        evidence_count = 0
+        for event, expected, evidence in stored_links(connection, "db"):
             actual = dict(connection.execute("SELECT * FROM link_decisions WHERE event_id=?", (event["event_id"],)).fetchone())
             require(actual == expected, "link decision disagrees with legacy rule")
-            actual_candidates = connection.execute("SELECT k.* FROM link_candidates k JOIN call_events c ON c.event_id=k.call_event_id WHERE k.event_id=? ORDER BY c.legacy_call_id", (event["event_id"],))
-            for actual_row, expected_row in itertools.zip_longest(actual_candidates, candidate_evidence(connection, event, expected, candidate_rows)):
-                require(actual_row is not None and expected_row is not None and dict(actual_row) == expected_row, "incomplete/incorrect candidate evidence")
+            count, _ = verify_candidates(connection, "link_candidates", evidence, require, "incomplete/incorrect candidate evidence")
+            evidence_count += count
+        require(connection.execute("SELECT count(*) FROM link_candidates").fetchone()[0] == evidence_count,
+                "incomplete/incorrect candidate evidence")
         # Each row is one DB event: SQL dictionaries and candidate tables never
         # become additional observations in this accounting path.
         observed = 0

@@ -1,13 +1,12 @@
 """Recheck raw messages, every link and every incident hypothesis from saved data."""
 from __future__ import annotations
 
-import itertools
 import json
 
 from error_rules import (ERROR_METADATA, INCIDENT_RULES_VERSION, message_fields, classify_error,
-                         error_decision, error_candidates, membership)
+                         membership)
 from error_store import ERROR_EXPORTS, export_rows, error_groups, error_summary
-from event_linking import candidates
+from stored_linking import stored_links, verify_candidates
 
 
 def verify_errors(root, manifest, calls, connection, require, compare_csv):
@@ -16,23 +15,16 @@ def verify_errors(root, manifest, calls, connection, require, compare_csv):
     population = connection.execute("SELECT count(*) FROM events WHERE event_type IN ('EXCP','QERR')").fetchone()[0]
     for table in ("error_events", "error_link_decisions", "error_incident_members", "error_observations"):
         require(connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == population, "incomplete error population: " + table)
-    for event in connection.execute("SELECT e.*,r.* FROM error_events r JOIN events e USING(event_id) ORDER BY e.event_id"):
+    evidence_count = 0
+    for event, expected, evidence in stored_links(connection, "error"):
         require(event["event_type"] in ("EXCP", "QERR"), "unexpected error event type")
         fields = message_fields(json.loads(event["attributes_json"]))
         require(all(event[k] == v for k, v in fields.items()), "error message/signature mismatch")
         require(event["category"] == classify_error(event["raw_message"] or ""), "error text category mismatch")
-        candidate_rows = candidates(connection, event)
-        expected = error_decision(connection, event, candidate_rows)
         actual = connection.execute("SELECT * FROM error_link_decisions WHERE event_id=?", (event["event_id"],)).fetchone()
         require(actual is not None and dict(actual) == expected, "error link decision mismatch")
-        actual_candidates = connection.execute(
-            "SELECT k.* FROM error_link_candidates k JOIN call_events c ON c.event_id=k.call_event_id WHERE k.event_id=? ORDER BY c.legacy_call_id",
-            (event["event_id"],))
-        connect_relation = None
-        for actual_row, expected_row in itertools.zip_longest(actual_candidates, error_candidates(connection, event, expected, candidate_rows)):
-            require(actual_row is not None and expected_row is not None and dict(actual_row) == expected_row, "error candidate evidence mismatch")
-            if expected_row["selected"]:
-                connect_relation = expected_row["connect_relation"]
+        count, connect_relation = verify_candidates(connection, "error_link_candidates", evidence, require, "error candidate evidence mismatch")
+        evidence_count += count
         expected_member = membership(event, expected, connect_relation)
         member = connection.execute("SELECT * FROM error_incident_members WHERE event_id=?", (event["event_id"],)).fetchone()
         require(member is not None and dict(member) == expected_member, "incident membership/evidence mismatch")
@@ -41,6 +33,8 @@ def verify_errors(root, manifest, calls, connection, require, compare_csv):
             "incident_id": expected_member["incident_id"], "incident_rules_version": INCIDENT_RULES_VERSION,
             "group_key_json": expected_member["group_key_json"], "hypothesis_status": "unconfirmed",
             "root_cause": None, "cancellation_initiator": None}, "incident hypothesis/attribution mismatch")
+    require(connection.execute("SELECT count(*) FROM error_link_candidates").fetchone()[0] == evidence_count,
+            "error candidate evidence mismatch")
     require(connection.execute(
         "SELECT 1 FROM suspected_incidents i WHERE NOT EXISTS (SELECT 1 FROM error_incident_members m WHERE m.incident_id=i.incident_id) LIMIT 1"
     ).fetchone() is None, "empty incident")

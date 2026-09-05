@@ -41,6 +41,7 @@ from record_stream import RecordStream
 from source_identity import assign_sources
 from event_store import EventStore, CALL_DETAIL_FIELDS, VERSIONS, timestamp as stored_timestamp
 from event_linking import LINKAGE_RULES
+from stored_linking import auxiliary_rows
 from error_rules import ERROR_METADATA, ERROR_GROUP_FIELDS, normalize_error, classify_error
 from error_store import link_errors, error_rows, error_groups, error_summary
 from progress import ProgressReporter
@@ -925,7 +926,7 @@ def analyze_pass_two(
     dict[tuple[str, str, str], LockGroup],
     dict[tuple[str, str], dict],
 ]:
-    indexes = build_indexes(calls)
+    calls_by_id = {call.call_id: call for call in calls}
     sql_groups: dict[tuple[str, str], SqlGroup] = {}
     lock_groups: dict[tuple[str, str, str], LockGroup] = {}
     linkage: dict[tuple[str, str], dict] = {}
@@ -939,63 +940,59 @@ def analyze_pass_two(
     auxiliary_types = ("SDBL", "TLOCK", "TTIMEOUT", "TDEADLOCK")
     numeric_groups = iter(store._event_numeric_groups(auxiliary_types))
     numeric_group = next(numeric_groups, None)
-    for row in store.connection.execute("SELECT * FROM events WHERE event_type IN ('SDBL','TLOCK','TTIMEOUT','TDEADLOCK') ORDER BY source_version_id,byte_start"):
-        row_key = (row["source_version_id"], row["byte_start"], row["event_id"])
-        if numeric_group is not None and numeric_group[0] < row_key:
-            raise ValueError("Auxiliary numeric stream is not aligned with stored events")
-        if numeric_group is not None and numeric_group[0] == row_key:
-            numeric = numeric_group[1]
-            numeric_group = next(numeric_groups, None)
-        else:
-            numeric = {}
-        event, user, timestamp = row["event_type"], row["user"], stored_timestamp(row["end_time_us"])
-        measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
-        stats = linkage.setdefault((dataset_id, measurement_id), fresh_linkage(measurement_id, dataset_id))
-        duration_us, thread, session = row["duration_us"], row["thread"], row["session"]
-        context = context_root(row["context"] or "")
-        linked_call: CallRecord | None = None
-        if timestamp is not None and thread:
-            index = indexes.get((dataset_id, user, row["process"], thread))
-            if index is not None:
-                linked_call = index.find(timestamp, session)
+    with auxiliary_rows(store) as rows:
+        for row in rows:
+            row_key = (row["source_version_id"], row["byte_start"], row["event_id"])
+            if numeric_group is not None and numeric_group[0] < row_key:
+                raise ValueError("Auxiliary numeric stream is not aligned with stored events")
+            if numeric_group is not None and numeric_group[0] == row_key:
+                numeric = numeric_group[1]
+                numeric_group = next(numeric_groups, None)
+            else:
+                numeric = {}
+            event, user, timestamp = row["event_type"], row["user"], stored_timestamp(row["end_time_us"])
+            measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
+            stats = linkage.setdefault((dataset_id, measurement_id), fresh_linkage(measurement_id, dataset_id))
+            duration_us, thread = row["duration_us"], row["thread"]
+            context = context_root(row["context"] or "")
+            linked_call = calls_by_id.get(row["linked_call_id"])
 
-        category = ""
-        if event == "SDBL":
-            category = "sdbl"
-        elif event in {"TLOCK", "TTIMEOUT", "TDEADLOCK"}:
-            category = "lock"
-        stats[f"{category}_total_count"] += 1
-        if linked_call is not None:
-            stats[f"{category}_linked_count"] += 1
-        elif timestamp is None:
-            stats["unlinked_missing_timestamp"] += 1
-        elif not thread:
-            stats["unlinked_missing_thread"] += 1
-        else:
-            stats["unlinked_no_containing_call"] += 1
+            category = ""
+            if event == "SDBL":
+                category = "sdbl"
+            elif event in {"TLOCK", "TTIMEOUT", "TDEADLOCK"}:
+                category = "lock"
+            stats[f"{category}_total_count"] += 1
+            if linked_call is not None:
+                stats[f"{category}_linked_count"] += 1
+            elif timestamp is None:
+                stats["unlinked_missing_timestamp"] += 1
+            elif not thread:
+                stats["unlinked_missing_thread"] += 1
+            else:
+                stats["unlinked_no_containing_call"] += 1
 
-        if event == "SDBL":
-            if linked_call is not None:
-                linked_call.sdbl_count += 1
-        elif event in {"TLOCK", "TTIMEOUT", "TDEADLOCK"}:
-            lock_key = (measurement_id, event, context or "(context unavailable)")
-            group = lock_groups.get(lock_key)
-            if group is None:
-                group = LockGroup(event=event)
-                lock_groups[lock_key] = group
-            group.add(duration_us, numeric)
-            group.users.add(user)
-            if context and len(group.contexts) < 30:
-                group.contexts.add(context)
-            if linked_call is not None:
-                group.linked_call_count += 1
-                linked_call.lock_count += 1
-                linked_call.lock_duration_us += duration_us
-        if progress is not None:
-            progress.advance(1)
+            if event == "SDBL":
+                if linked_call is not None:
+                    linked_call.sdbl_count += 1
+            elif event in {"TLOCK", "TTIMEOUT", "TDEADLOCK"}:
+                lock_key = (measurement_id, event, context or "(context unavailable)")
+                group = lock_groups.get(lock_key)
+                if group is None:
+                    group = LockGroup(event=event)
+                    lock_groups[lock_key] = group
+                group.add(duration_us, numeric)
+                group.users.add(user)
+                if context and len(group.contexts) < 30:
+                    group.contexts.add(context)
+                if linked_call is not None:
+                    group.linked_call_count += 1
+                    linked_call.lock_count += 1
+                    linked_call.lock_duration_us += duration_us
+            if progress is not None:
+                progress.advance(1)
     if numeric_group is not None:
         raise ValueError("Auxiliary numeric stream contains an event outside stored event order")
-    calls_by_id = {call.call_id: call for call in calls}
     for row in store.db_rows(include_sql=True):
         measurement_id, dataset_id = row["measurement_id"], row["dataset_id"]
         stats = linkage.setdefault((dataset_id, measurement_id), fresh_linkage(measurement_id, dataset_id))

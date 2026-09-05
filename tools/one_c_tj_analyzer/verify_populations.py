@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 import re
 
-from event_linking import decide
+from stored_linking import stored_links
 from numeric_quality import CounterStats, FIELDS, operation_counters, QUALITY_CSV_FIELDS
 
 CHECKS = ["explicit_unique_ids_and_references", "source_positions_and_completeness",
@@ -190,8 +190,7 @@ def verify_populations(connection, manifest, calls, require):
     # Auxiliary CALL assignments are recomputed from the unchanged owner rule.
     connection.execute("CREATE TEMP TABLE checked_aux(event_id TEXT PRIMARY KEY,parent_event_id TEXT,category TEXT,context TEXT)")
     per_call, per_link = defaultdict(lambda: [0,0,0]), defaultdict(lambda: [0,0,0,0])
-    for event in connection.execute("SELECT * FROM events WHERE event_type IN ('SDBL','TLOCK','TTIMEOUT','TDEADLOCK')"):
-        decision = decide(connection, event)
+    for event, decision, _ in stored_links(connection, "aux", include_evidence=False):
         category = "sdbl" if event["event_type"] == "SDBL" else "lock"
         parent = decision["parent_event_id"]
         connection.execute("INSERT INTO checked_aux VALUES(?,?,?,?)", (event["event_id"], parent, category, context_root(event["context"]) or "(context unavailable)"))

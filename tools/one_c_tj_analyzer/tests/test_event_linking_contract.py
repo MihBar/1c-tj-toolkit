@@ -20,6 +20,7 @@ from event_linking import (  # noqa: E402
     decide,
 )
 from event_store import EventStore  # noqa: E402
+from stored_linking import CALL_SCAN  # noqa: E402
 
 
 EVENT_TYPES = ("DBPOSTGRS", "EXCP")
@@ -271,7 +272,7 @@ class LinkageContractTests(unittest.TestCase):
                 )
                 self.assertEqual([row["call_event_id"] for row in evidence], ["call-1", "call-2"])
 
-    def test_store_executes_candidate_query_once_for_each_db_and_error_event(self):
+    def test_store_uses_one_call_scan_per_phase_without_event_candidate_queries(self):
         with tempfile.TemporaryDirectory(prefix="tj-link-query-test-") as temp:
             store = EventStore(Path(temp) / "analysis.sqlite")
             connection = store.connection
@@ -320,7 +321,8 @@ class LinkageContractTests(unittest.TestCase):
             db_decision_count = connection.execute("SELECT count(*) FROM link_decisions").fetchone()[0]
             error_decision_count = connection.execute("SELECT count(*) FROM error_link_decisions").fetchone()[0]
             store.close()
-            self.assertEqual(len(candidate_queries), 2)
+            self.assertEqual(len(candidate_queries), 0)
+            self.assertEqual(statements.count(CALL_SCAN), 2)
             self.assertEqual(db_decision_count, 1)
             self.assertEqual(error_decision_count, 1)
 

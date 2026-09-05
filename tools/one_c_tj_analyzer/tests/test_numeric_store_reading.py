@@ -201,6 +201,10 @@ class NumericStoreReadingTests(unittest.TestCase):
         )
 
     def test_auxiliary_events_use_one_numeric_stream_without_cross_event_mixing(self):
+        # The production sweep reads the CALL population stored by pass one.
+        self.insert_auxiliary_event("call", "CALL", 0)
+        self.connection.execute("UPDATE events SET start_time_us=0,end_time_us=100,duration_us=100,duration_raw='100' WHERE event_id='call'")
+        self.connection.execute("INSERT INTO call_events VALUES ('call',1,'Operation','1.0')")
         auxiliary = (
             ("aux-a", "TLOCK", 50, {"cpu_us": "0", "rows_affected": None}),
             ("aux-b", "SDBL", 60, {"cpu_us": "17"}),
