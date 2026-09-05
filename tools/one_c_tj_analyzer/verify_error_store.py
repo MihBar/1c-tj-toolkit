@@ -43,13 +43,17 @@ def verify_errors(root, manifest, calls, connection, require, compare_csv):
     require(manifest["errors"] == error_groups(connection), "error group counts/signatures mismatch")
     for key, field in (("error_events", "event_count"), ("affected_calls", "affected_call_count"), ("suspected_incidents", "suspected_incident_count")):
         require(manifest["counts"].get(key) == summary[field], "error count mismatch: " + key)
+    error_counts = dict(connection.execute(
+        "SELECT parent_event_id,count(*) FROM error_link_decisions WHERE parent_event_id IS NOT NULL GROUP BY parent_event_id"))
     for call in calls:
-        count = connection.execute("SELECT count(*) FROM error_link_decisions WHERE parent_event_id=?", (call["event_id"],)).fetchone()[0]
+        count = error_counts.get(call["event_id"], 0)
         require(count == call["error_count"], "CALL error event count mismatch")
+    error_linkage_counts = {(r[0], r[1]): (r[2], r[3]) for r in connection.execute(
+        "SELECT e.measurement_id,e.dataset_id,count(*),count(k.parent_event_id) "
+        "FROM error_events r JOIN events e USING(event_id) JOIN error_link_decisions k USING(event_id) "
+        "WHERE e.measurement_id IS NOT NULL AND e.dataset_id IS NOT NULL GROUP BY e.measurement_id,e.dataset_id")}
     for row in manifest["linkage"]:
-        counts = connection.execute(
-            "SELECT count(*),count(k.parent_event_id) FROM error_events r JOIN events e USING(event_id) JOIN error_link_decisions k USING(event_id) "
-            "WHERE e.measurement_id=? AND e.dataset_id=?", (row["measurement_id"], row["dataset_id"])).fetchone()
+        counts = error_linkage_counts.get((row["measurement_id"], row["dataset_id"]), (0, 0))
         require(tuple(counts) == (row["error_total_count"], row["error_linked_count"]), "error linkage sums mismatch")
     for table, filename, order in ERROR_EXPORTS:
         fields = [r[1] for r in connection.execute(f"PRAGMA table_info({table})")]

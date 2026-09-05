@@ -6,6 +6,7 @@ import re
 
 from stored_linking import stored_links
 from numeric_quality import CounterStats, FIELDS, operation_counters, QUALITY_CSV_FIELDS
+from verify_additive import additive_groups, AdditiveStats
 
 CHECKS = ["explicit_unique_ids_and_references", "source_positions_and_completeness",
           "sql_dictionary_complete_and_referenced", "exact_event_sql_lock_percentiles",
@@ -72,6 +73,8 @@ def source_coverage(connection, manifest, require):
     from source_identity import identity
     files = {r["source"]: r for r in manifest["files"]}
     require(len(files) == connection.execute("SELECT count(*) FROM source_locations").fetchone()[0], "source location coverage mismatch")
+    source_counts = dict(connection.execute(
+        "SELECT source_version_id,count(*) FROM events WHERE source_version_id IS NOT NULL GROUP BY source_version_id"))
     for row in connection.execute("SELECT l.*,v.source_id,v.size_bytes,v.status,v.analyzed_bytes,v.content_sha256 FROM source_locations l JOIN source_versions v USING(source_version_id)"):
         item = files.get(row["display_path"])
         require(item is not None, "source location missing from manifest")
@@ -81,7 +84,7 @@ def source_coverage(connection, manifest, require):
         require((item["member"] or None) == row["member"] and (item["sha256"] or None) == row["content_sha256"], "source locator/hash mismatch")
         if item["status"] != "skipped_duplicate":
             require(item["status"] == row["status"] and item["analyzed_bytes"] == row["analyzed_bytes"], "source processing status mismatch")
-            count = connection.execute("SELECT count(*) FROM events WHERE source_version_id=?", (row["source_version_id"],)).fetchone()[0]
+            count = source_counts.get(row["source_version_id"], 0)
             require(count + item["parse_errors"] == item["records"], "source record coverage mismatch")
         else:
             require(item["records"] == item["parse_errors"] == 0, "duplicate source counted twice")
@@ -100,19 +103,36 @@ def source_coverage(connection, manifest, require):
         require(row["status"] in {"skipped", "partial_read_error", "partial_nul_salvaged"}, "diagnostic hidden by complete source status")
         material_issue = True
     require(not material_issue or not manifest["source_processing_complete"], "diagnostics hidden by completeness flag")
+    missing_times = dict(connection.execute(
+        "SELECT dataset_id,count(*) FROM events WHERE end_time_us IS NULL AND dataset_id IS NOT NULL GROUP BY dataset_id"))
     for dataset in manifest["datasets"]:
         selected = [r for r in manifest["files"] if r["dataset_id"] == dataset["dataset_id"] and r["status"] in {"valid", "valid_no_timestamp", "partial_read_error", "partial_nul_salvaged"}]
         for key, expected in (("files_analyzed", len(selected)), ("bytes_analyzed", sum(r["analyzed_bytes"] for r in selected)),
                               ("records", sum(r["records"] for r in selected)), ("parse_errors", sum(r["parse_errors"] for r in selected))):
             require(dataset[key] == expected, "dataset source totals mismatch: " + key)
-        missing = connection.execute("SELECT count(*) FROM events WHERE dataset_id=? AND end_time_us IS NULL", (dataset["dataset_id"],)).fetchone()[0]
+        missing = missing_times.get(dataset["dataset_id"], 0)
         require(dataset["events_without_absolute_timestamp"] == missing, "unknown time population mismatch")
 
 
-def exact_stats(connection, selection, params, require):
+def exact_stats(connection, selection, params, require, additive=None):
     query = " FROM events e JOIN (" + selection + ") p ON p.event_id=e.event_id"
     count, distinct = connection.execute("SELECT count(*),count(DISTINCT e.event_id)" + query, params).fetchone()
     require(count == distinct, "aggregate population duplicates events")
+    if additive is not None:
+        # Keep the original count/distinct and exact ordered-duration queries.
+        # Additive measures come only from the independent event/numeric streams.
+        require(count == additive['count'], "additive population count mismatch")
+        ranks = {(count-1)//2, count//2, (95*count+99)//100-1, (99*count+99)//100-1}
+        picked, observed = {}, 0
+        for index, row in enumerate(connection.execute("SELECT e.duration_us" + query + " ORDER BY e.duration_us,e.event_id", params)):
+            observed += 1
+            if index in ranks:
+                picked[index] = row[0]
+        require(observed == count, "ordered population count mismatch")
+        return {**additive,
+                "median_us": round(float((picked[(count-1)//2]+picked[count//2])/2),3) if count else 0.0,
+                "p95_us": picked[(95*count+99)//100-1] if count else 0,
+                "p99_us": picked[(99*count+99)//100-1] if count else 0}
     ranks = {(count-1)//2, count//2, (95*count+99)//100-1, (99*count+99)//100-1}
     picked, total, maximum, over, middle_band = {}, 0, 0, [0]*4, 0
     for index, row in enumerate(connection.execute("SELECT e.duration_us" + query + " ORDER BY e.duration_us,e.event_id", params)):
@@ -207,23 +227,29 @@ def verify_populations(connection, manifest, calls, require):
         require(per_call[call["event_id"]] == [call[k] for k in ("sdbl_count", "lock_count", "lock_duration_us")], "CALL auxiliary contribution mismatch")
     for row in manifest["linkage"]:
         require(per_link[(row["measurement_id"],row["dataset_id"]) ] == [row[k] for k in ("sdbl_total_count","sdbl_linked_count","lock_total_count","lock_linked_count")], "auxiliary linkage totals mismatch")
+    dataset_additive = additive_groups(connection, 'dataset', require)
     for dataset in manifest["datasets"]:
         types = {r[0] for r in connection.execute("SELECT DISTINCT event_type FROM events WHERE dataset_id=?", (dataset["dataset_id"],))}
         require(types == set(dataset["event_stats"]), "dataset event type coverage mismatch")
         for event_type, actual in dataset["event_stats"].items():
-            expected = exact_stats(connection, "SELECT event_id FROM events WHERE dataset_id=? AND event_type=?", (dataset["dataset_id"],event_type), require)
+            expected = exact_stats(connection, "SELECT event_id FROM events WHERE dataset_id=? AND event_type=?", (dataset["dataset_id"],event_type), require,
+                                   dataset_additive.get((dataset["dataset_id"], event_type), AdditiveStats()).as_dict())
             compare_stats(actual, expected, "dataset."+event_type, require)
+    sql_additive = additive_groups(connection, 'sql', require)
     for row in manifest["heavy_sql"]:
         selection = "SELECT e.event_id FROM events e JOIN db_events d USING(event_id) JOIN sql_normalizations n USING(sql_text_id) JOIN sql_patterns p USING(pattern_id) WHERE e.measurement_id=? AND p.sql_fingerprint_sha256=?"
-        expected = exact_stats(connection, selection, (row["measurement_id"],row["sql_fingerprint_sha256"]), require)
+        expected = exact_stats(connection, selection, (row["measurement_id"],row["sql_fingerprint_sha256"]), require,
+                               sql_additive.get((row["measurement_id"],row["sql_fingerprint_sha256"]), AdditiveStats()).as_dict())
         compare_stats(row, expected, "SQL", require)
     lock_keys = {tuple(r) for r in connection.execute("SELECT DISTINCT e.measurement_id,e.event_type,a.context FROM checked_aux a JOIN events e USING(event_id) WHERE a.category='lock'")}
     require(lock_keys == {(r['measurement_id'],r['event'],r['context']) for r in manifest["locks"]}, "lock group coverage mismatch")
+    lock_additive = additive_groups(connection, 'lock', require)
     for row in manifest["locks"]:
         selection = "SELECT e.event_id FROM events e JOIN checked_aux a USING(event_id) WHERE e.measurement_id=? AND e.event_type=? AND a.context=?"
         params = (row["measurement_id"],row["event"],row["context"])
-        compare_stats(row, exact_stats(connection, selection, params, require), "lock", require)
-        count = connection.execute("SELECT count(*) FROM checked_aux WHERE parent_event_id IS NOT NULL AND event_id IN ("+selection+")", params).fetchone()[0]
+        aggregate = lock_additive.get(params, AdditiveStats())
+        compare_stats(row, exact_stats(connection, selection, params, require, aggregate.as_dict()), "lock", require)
+        count = aggregate.linked
         require(row["linked_call_count"] == count, "lock linked event count mismatch")
     connection.execute("CREATE TEMP TABLE checked_operation(call_event_id TEXT PRIMARY KEY,operation_index INTEGER)")
     call_ids = {c["call_id"]:c["event_id"] for c in calls}

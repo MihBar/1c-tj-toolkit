@@ -1,0 +1,69 @@
+{
+  "revision": "9ed05c88dd52c4ebb9739f46f1370c9ca86563db",
+  "blocks": {
+    "source_counts": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "source_coverage",
+      "line": 75,
+      "end_line": 87,
+      "sha256": "607da3616e06ca86b422cb39c4754f1963564d8968411cae1ff2f3cf98ecdcf6",
+      "source": "for row in connection.execute(\"SELECT l.*,v.source_id,v.size_bytes,v.status,v.analyzed_bytes,v.content_sha256 FROM source_locations l JOIN source_versions v USING(source_version_id)\"):\n        item = files.get(row[\"display_path\"])\n        require(item is not None, \"source location missing from manifest\")\n        require(row[\"location_id\"] == identity(\"location/v1\", row[\"display_path\"]), \"location identity mismatch\")\n        for key in (\"source_id\", \"source_version_id\", \"kind\", \"member_ordinal\", \"size_bytes\"):\n            require(item[key] == row[key], \"source field mismatch: \" + key)\n        require((item[\"member\"] or None) == row[\"member\"] and (item[\"sha256\"] or None) == row[\"content_sha256\"], \"source locator/hash mismatch\")\n        if item[\"status\"] != \"skipped_duplicate\":\n            require(item[\"status\"] == row[\"status\"] and item[\"analyzed_bytes\"] == row[\"analyzed_bytes\"], \"source processing status mismatch\")\n            count = connection.execute(\"SELECT count(*) FROM events WHERE source_version_id=?\", (row[\"source_version_id\"],)).fetchone()[0]\n            require(count + item[\"parse_errors\"] == item[\"records\"], \"source record coverage mismatch\")\n        else:\n            require(item[\"records\"] == item[\"parse_errors\"] == 0, \"duplicate source counted twice\")"
+    },
+    "dataset_sources": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "source_coverage",
+      "line": 103,
+      "end_line": 109,
+      "sha256": "a60e57eb420eee646f52609d7772082db4cdbcf558184ea484650a0a731bb44c",
+      "source": "for dataset in manifest[\"datasets\"]:\n        selected = [r for r in manifest[\"files\"] if r[\"dataset_id\"] == dataset[\"dataset_id\"] and r[\"status\"] in {\"valid\", \"valid_no_timestamp\", \"partial_read_error\", \"partial_nul_salvaged\"}]\n        for key, expected in ((\"files_analyzed\", len(selected)), (\"bytes_analyzed\", sum(r[\"analyzed_bytes\"] for r in selected)),\n                              (\"records\", sum(r[\"records\"] for r in selected)), (\"parse_errors\", sum(r[\"parse_errors\"] for r in selected))):\n            require(dataset[key] == expected, \"dataset source totals mismatch: \" + key)\n        missing = connection.execute(\"SELECT count(*) FROM events WHERE dataset_id=? AND end_time_us IS NULL\", (dataset[\"dataset_id\"],)).fetchone()[0]\n        require(dataset[\"events_without_absolute_timestamp\"] == missing, \"unknown time population mismatch\")"
+    },
+    "dataset_stats": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "verify_populations",
+      "line": 210,
+      "end_line": 215,
+      "sha256": "dbf07632a755fb8c41441916e52a46d0cec0311763073064f027484d1ee9b4f5",
+      "source": "for dataset in manifest[\"datasets\"]:\n        types = {r[0] for r in connection.execute(\"SELECT DISTINCT event_type FROM events WHERE dataset_id=?\", (dataset[\"dataset_id\"],))}\n        require(types == set(dataset[\"event_stats\"]), \"dataset event type coverage mismatch\")\n        for event_type, actual in dataset[\"event_stats\"].items():\n            expected = exact_stats(connection, \"SELECT event_id FROM events WHERE dataset_id=? AND event_type=?\", (dataset[\"dataset_id\"],event_type), require)\n            compare_stats(actual, expected, \"dataset.\"+event_type, require)"
+    },
+    "heavy_sql": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "verify_populations",
+      "line": 216,
+      "end_line": 219,
+      "sha256": "e06310fad2e0a5c1011adc561ea2e7b975f866c46ac9470dedff0e15cbb98f84",
+      "source": "for row in manifest[\"heavy_sql\"]:\n        selection = \"SELECT e.event_id FROM events e JOIN db_events d USING(event_id) JOIN sql_normalizations n USING(sql_text_id) JOIN sql_patterns p USING(pattern_id) WHERE e.measurement_id=? AND p.sql_fingerprint_sha256=?\"\n        expected = exact_stats(connection, selection, (row[\"measurement_id\"],row[\"sql_fingerprint_sha256\"]), require)\n        compare_stats(row, expected, \"SQL\", require)"
+    },
+    "locks": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "verify_populations",
+      "line": 222,
+      "end_line": 227,
+      "sha256": "641cee979c7628d74a7533f3637f81eeb8acffa5d75da505cd4cec63f475be9e",
+      "source": "for row in manifest[\"locks\"]:\n        selection = \"SELECT e.event_id FROM events e JOIN checked_aux a USING(event_id) WHERE e.measurement_id=? AND e.event_type=? AND a.context=?\"\n        params = (row[\"measurement_id\"],row[\"event\"],row[\"context\"])\n        compare_stats(row, exact_stats(connection, selection, params, require), \"lock\", require)\n        count = connection.execute(\"SELECT count(*) FROM checked_aux WHERE parent_event_id IS NOT NULL AND event_id IN (\"+selection+\")\", params).fetchone()[0]\n        require(row[\"linked_call_count\"] == count, \"lock linked event count mismatch\")"
+    },
+    "nested_sql": {
+      "file": "tools\\one_c_tj_analyzer\\verify_populations.py",
+      "function": "verify_populations",
+      "line": 232,
+      "end_line": 240,
+      "sha256": "e431da519da46798f270d447d81405611a456120e394baeeb868468b3f6a2d8a",
+      "source": "for index, operation in enumerate(manifest[\"operations\"]):\n        # Streaming sums avoid signed-64-bit SQLite SUM overflow for durations.\n        totals = defaultdict(lambda: [0,0,0])\n        for row in connection.execute(\"SELECT p.normalized_sql,e.duration_us FROM db_events d JOIN events e USING(event_id) JOIN link_decisions k USING(event_id) JOIN checked_operation o ON o.call_event_id=k.parent_event_id JOIN sql_normalizations n USING(sql_text_id) JOIN sql_patterns p USING(pattern_id) WHERE o.operation_index=?\", (index,)):\n            item=totals[row[0]]; item[0]+=1; item[1]+=row[1]; item[2]=max(item[2],row[1])\n        expected=sorted(totals.items(),key=lambda item:(item[1][1],item[1][2],item[0]),reverse=True)[:10]\n        require(len(expected)==len(operation['top_nested_sql']), \"nested SQL preview coverage mismatch\")\n        for (sql, metrics), actual in zip(expected,operation['top_nested_sql']):\n            require(sql==actual['normalized_sql'] and metrics==[actual[k] for k in ('count','duration_us','max_us')], \"nested SQL counted more than once or omitted\")"
+    },
+    "error_calls": {
+      "file": "tools\\one_c_tj_analyzer\\verify_error_store.py",
+      "function": "verify_errors",
+      "line": 46,
+      "end_line": 48,
+      "sha256": "ab1d99fd4371df080a307e542543ba23578cbe41739be2b95ae2eb10826c843b",
+      "source": "for call in calls:\n        count = connection.execute(\"SELECT count(*) FROM error_link_decisions WHERE parent_event_id=?\", (call[\"event_id\"],)).fetchone()[0]\n        require(count == call[\"error_count\"], \"CALL error event count mismatch\")"
+    },
+    "error_linkage": {
+      "file": "tools\\one_c_tj_analyzer\\verify_error_store.py",
+      "function": "verify_errors",
+      "line": 49,
+      "end_line": 53,
+      "sha256": "48220233964648457aaa5953f70ebe9138f51329863a0ec0896b72851f693ea6",
+      "source": "for row in manifest[\"linkage\"]:\n        counts = connection.execute(\n            \"SELECT count(*),count(k.parent_event_id) FROM error_events r JOIN events e USING(event_id) JOIN error_link_decisions k USING(event_id) \"\n            \"WHERE e.measurement_id=? AND e.dataset_id=?\", (row[\"measurement_id\"], row[\"dataset_id\"])).fetchone()\n        require(tuple(counts) == (row[\"error_total_count\"], row[\"error_linked_count\"]), \"error linkage sums mismatch\")"
+    }
+  }
+}
