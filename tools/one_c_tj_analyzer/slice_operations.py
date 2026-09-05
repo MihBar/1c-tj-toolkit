@@ -166,7 +166,21 @@ class OperationSeries:
         self.baseline = baseline if baseline is not None else (self.order[0] if self.reliable and self.order else None)
         self.pairs = sorted({(c["signature"], c["user"]) for c in bundle.calls})
         self.signatures = sorted({c["signature"] for c in bundle.calls})
-        self.observed = {(sig, user): [m for m in self.order if self.groups.get((sig, user, m))] for sig, user in self.pairs}
+        self.observed = {}
+        self._previous_observation = {}
+        for sig, user in self.pairs:
+            observed, previous = [], []
+            last = None
+            for mid in self.order:
+                # Record the strictly earlier observation before advancing.
+                # Full-series positions keep filtered and out-of-order queries
+                # independent of any mutable traversal state.
+                previous.append(last)
+                if self.groups.get((sig, user, mid)):
+                    observed.append(mid)
+                    last = mid
+            self.observed[(sig, user)] = observed
+            self._previous_observation[(sig, user)] = tuple(previous)
         self.first_pooled = {
             sig: next((m for m in self.order if self.pooled.get((sig, m))), None) if self.reliable else None
             for sig in self.signatures
@@ -234,8 +248,8 @@ class OperationSeries:
         if basis == "first_observation":
             return self.observed[(sig, user)][0], None
         if basis == "previous_observation":
-            previous = [m for m in self.observed[(sig, user)] if self.position[m] < self.position[current]]
-            return (previous[-1], None) if previous else (None, "no_previous_observation")
+            previous = self._previous_observation[(sig, user)][self.position[current]]
+            return (previous, None) if previous is not None else (None, "no_previous_observation")
         index = self.position[current]
         return (self.order[index - 1], None) if index else (None, "no_previous_measurement")
 

@@ -65,6 +65,19 @@ RULE_COVERAGE_FIELDS = (
 ).split()
 
 
+def _with_previous_values(all_values):
+    """Walk the full series, exposing strictly earlier observations and checks."""
+    previous_eligible = None
+    previous_observed = None
+    for i, current in enumerate(all_values):
+        yield i, current, previous_eligible, previous_observed
+        # Advance only after the current point has consumed its references.
+        if current["eligible_for_comparison"]:
+            previous_eligible = current
+        if current["count"]:
+            previous_observed = current["measurement_id"]
+
+
 class ProblemSeries:
     def __init__(self, bundle, config, *, context=None):
         self.bundle = bundle
@@ -189,6 +202,7 @@ class ProblemSeries:
         registry, history, coverage = [], [], []
         if not self.series.order:
             return registry, history, coverage
+        selected = set(self.series.selected)
         first_mid, latest_mid = self.series.order[0], self.series.order[-1]
         for rule in self.cfg["rules"]:
             pairs = self.rule_pairs[rule["rule_id"]]
@@ -236,10 +250,11 @@ class ProblemSeries:
                 last_observed = next((e["measurement_id"] for e in reversed(all_values) if e["count"]), None)
                 last_value = next((e["measurement_id"] for e in reversed(all_values) if e["metric_available"]), None)
                 last_evaluable = next((e["measurement_id"] for e in reversed(all_values[first_index:]) if e["eligible_for_comparison"]), None)
-                for i in range(first_index, len(all_values)):
-                    current = all_values[i]
-                    previous = next((e for e in reversed(all_values[:i]) if e["eligible_for_comparison"]), None)
-                    previous_observed = next((e["measurement_id"] for e in reversed(all_values[:i]) if e["count"]), None)
+                for i, current, previous, previous_observed in _with_previous_values(all_values):
+                    # Earlier normal or insufficient observations still supply
+                    # references for the first breach and subsequent history.
+                    if i < first_index:
+                        continue
                     changes = {"first_problem_": self.change(current, first), "previous_comparable_": self.change(current, previous)}
                     limitations = sorted(set(LIMITATIONS) | set(self.series.history(sig, user, current["measurement_id"])["known_limitations"]))
                     if catalog["source"] == "apdex":
@@ -255,7 +270,7 @@ class ProblemSeries:
                     for prefix, change in changes.items():
                         row.update({prefix + k: v for k, v in change.items()})
                     assert set(row) == set(HISTORY_FIELDS)
-                    if current["measurement_id"] in self.series.selected:
+                    if current["measurement_id"] in selected:
                         history.append(row)
                     if i == len(all_values) - 1:
                         record = {**row, "last_observed_measurement_id": last_observed, "last_value_measurement_id": last_value,

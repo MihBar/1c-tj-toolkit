@@ -15,7 +15,7 @@ from slice_config import SliceError, normalize_config
 from slice_input import load_bundle
 from slice_problems import (EXCEEDED, DECREASED, INCREASED, BELOW, INSUFFICIENT, ABSENT,
     problem_registry, problem_history, problem_improved, problem_persisting, problem_worsened,
-    problem_new, problem_unchecked, problem_rule_coverage)
+    problem_new, problem_unchecked, problem_rule_coverage, _with_previous_values)
 from verify_slices import verify
 from test_derive_slices import hashes, fixture
 from test_slice_operations import saved_series, spec, M1, M2, M3, M4
@@ -40,6 +40,115 @@ class ProblemHistoryTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.input = self.root / "input"
+
+    def mixed_history_bundle(self):
+        mids = [f"series@2026-09-{day:02d}" for day in range(1, 10)]
+        # A zero wall denominator makes the CPU metric unavailable while CALLs
+        # remain observed. One-CALL samples fail the two-CALL comparison gate.
+        specs = []
+        for i, (count, seconds, cpu) in enumerate((
+            (2, 1, 0), (2, 0, 0), (1, 1, 200_000), (0, 0, 0),
+            (2, 1, 200_000), (2, 0, 0), (1, 1, 50_000), (2, 1, 300_000), (0, 0, 0),
+        )):
+            specs.extend(spec(mids[i], seconds, cpu_us=cpu) for _ in range(count))
+            specs.append(spec(mids[i], 1, user="Bob", signature="Other", cpu_us=0))
+        return saved_series(self.input, specs, order=mids), mids
+
+    def test_mixed_history_keeps_observation_eligibility_and_pre_breach_bases(self):
+        b, mids = self.mixed_history_bundle()
+        cfg = config([rule("cpu", "operation.cpu_percent_of_wall", 10, min_call_count=2)])
+        h = problem_history(b, cfg)
+        self.assertEqual([r["measurement_id"] for r in h], mids[2:])
+        self.assertEqual([r["threshold_status"] for r in h],
+                         [INSUFFICIENT, ABSENT, EXCEEDED, INSUFFICIENT, INSUFFICIENT, EXCEEDED, ABSENT])
+        self.assertEqual([r["previous_observation_measurement_id"] for r in h],
+                         [mids[1], mids[2], mids[2], mids[4], mids[5], mids[6], mids[7]])
+        self.assertEqual([r["previous_comparable_reference_measurement_id"] for r in h],
+                         [mids[0], mids[0], mids[0], mids[4], mids[4], mids[4], mids[7]])
+        self.assertTrue(h[0]["threshold_breached"])
+        self.assertFalse(h[0]["first_problem_evaluable"])
+        self.assertEqual(h[0]["insufficient_reasons"], ["sample_below_rule_minimum"])
+        self.assertEqual(h[1]["insufficient_reasons"], ["operation_not_observed"])
+        self.assertEqual(h[3]["insufficient_reasons"], ["metric_unavailable"])
+        self.assertGreater(h[3]["count"], 0)
+        self.assertIsNone(h[3]["value"])
+        self.assertIsNone(h[3]["threshold_breached"])
+        self.assertEqual(h[2]["previous_comparable_delta_absolute"], 20)
+        self.assertIsNone(h[2]["previous_comparable_delta_percent"])
+        self.assertEqual(h[2]["previous_comparable_percent_status"], "undefined_zero_reference")
+        self.assertEqual(h[5]["previous_comparable_delta_absolute"], 10)
+        self.assertEqual(h[5]["previous_comparable_delta_percent"], 50)
+        self.assertTrue(all(r["first_problem_delta_absolute"] is None for r in h))
+        filtered = dict(cfg, measurement_ids=[mids[4]])
+        self.assertEqual(problem_history(b, filtered), [h[2]])
+        latest = problem_registry(b, filtered)[0]
+        self.assertEqual(latest["measurement_id"], mids[-1])
+        self.assertEqual(latest["last_observed_measurement_id"], mids[7])
+        self.assertEqual(latest["last_value_measurement_id"], mids[7])
+        self.assertEqual(latest["last_evaluable_measurement_id"], mids[7])
+        self.assertTrue(latest["historical_without_latest_check"])
+
+    def test_all_problem_slices_match_legacy_prefix_search_exactly(self):
+        b, mids = self.mixed_history_bundle()
+
+        def legacy_previous(all_values):
+            for i, current in enumerate(all_values):
+                previous = next((e for e in reversed(all_values[:i]) if e["eligible_for_comparison"]), None)
+                observed = next((e["measurement_id"] for e in reversed(all_values[:i]) if e["count"]), None)
+                yield i, current, previous, observed
+
+        def assert_exact(actual, expected):
+            self.assertIs(type(actual), type(expected))
+            if isinstance(actual, dict):
+                self.assertEqual(list(actual), list(expected))
+                for key in actual:
+                    assert_exact(actual[key], expected[key])
+            elif isinstance(actual, (list, tuple)):
+                self.assertEqual(len(actual), len(expected))
+                for left, right in zip(actual, expected):
+                    assert_exact(left, right)
+            else:
+                self.assertEqual(actual, expected)
+
+        rules = [rule("cpu", "operation.cpu_percent_of_wall", 10, min_call_count=2),
+                 rule("cpu_single", "operation.cpu_percent_of_wall", 10),
+                 rule("zero", "operation.cpu_percent_of_wall", 0, operator=">=", min_call_count=2),
+                 rule("unavailable", "apdex.deficit", .15)]
+        for order in (mids, list(reversed(mids))):
+            for selected in (None, [mids[4]], [mids[7], mids[2]]):
+                cfg = config(rules, measurement_ids=selected, operations={"measurement_order": order})
+                for builder in BUILDERS:
+                    with self.subTest(order=order, selected=selected, builder=builder.__name__):
+                        actual = builder(b, cfg)
+                        with mock.patch("slice_problems._with_previous_values", legacy_previous):
+                            expected = builder(b, cfg)
+                        assert_exact(actual, expected)
+
+    def test_previous_values_walk_is_single_pass_without_prefix_copies(self):
+        class CountedValues:
+            def __init__(self, size):
+                self.size = size
+                self.visits = 0
+                self.iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                for i in range(self.size):
+                    self.visits += 1
+                    yield {"measurement_id": str(i), "count": int(i % 3 != 1),
+                           "eligible_for_comparison": i % 3 == 0}
+
+        for size in (30, 300):
+            values = CountedValues(size)
+            count = 0
+            for i, current, previous, observed in _with_previous_values(values):
+                count += 1
+                self.assertEqual(values.visits, i + 1)
+                if previous is not None:
+                    self.assertLess(int(previous["measurement_id"]), i)
+                if observed is not None:
+                    self.assertLess(int(observed), i)
+            self.assertEqual((count, values.visits, values.iterations), (size, size, 1))
 
     def test_first_measurement_problems_remain_and_later_discoveries_are_added(self):
         b = saved_series(self.input, [spec(M1, 20, signature="A"), spec(M2, 8, signature="A"),

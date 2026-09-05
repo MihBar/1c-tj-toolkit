@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from derive_slices import run
@@ -285,6 +286,95 @@ class OperationSliceTests(unittest.TestCase):
         b.calls.reverse()
         b.tables["datasets"].reverse()
         self.assertEqual(measurement_comparisons(b, self.config), before)
+
+    def test_previous_observation_is_full_series_and_query_order_independent(self):
+        b = saved_series(self.input, [
+            spec(M1, 0), spec(M2, 2, user="Bob"),
+            spec(M2, 3, signature="Other"), spec(M3, 1, user="Bob"), spec(M4, 4),
+        ], order=[M1, M2, M3, M4])
+        cfg = dict(self.config, measurement_ids=[M4])
+        series = OperationSeries(b, cfg)
+        expected = {
+            ("Operation", "Alice"): [None, M1, M1, M1],
+            ("Operation", "Bob"): [None, None, M2, M3],
+            ("Other", "Alice"): [None, None, M2, M2],
+        }
+        for requests in ([M1, M2, M3, M4], [M4, M3, M2, M1], [M3, M1, M4, M2, M4, M1]):
+            for mid in requests:
+                for (sig, user), references in expected.items():
+                    with self.subTest(requests=requests, mid=mid, pair=(sig, user)):
+                        series.history(sig, user, mid)
+                        reference = references[[M1, M2, M3, M4].index(mid)]
+                        self.assertEqual(series.reference(sig, user, mid, "previous_observation"),
+                                         (reference, None if reference else "no_previous_observation"))
+        self.assertEqual(series.reference("Operation", "Alice", M4, "previous_measurement"), (M3, None))
+        rows = measurement_comparisons(b, cfg)
+        self.assertEqual({r["current_measurement_id"] for r in rows}, {M4})
+        row = next(r for r in rows if r["signature"] == "Operation" and r["user"] == "Alice"
+                   and r["comparison_basis"] == "previous_observation")
+        self.assertEqual(row["reference_measurement_id"], M1)
+        self.assertIsNone(row["avg_us_delta_percent"])
+
+    def test_previous_observation_unknown_chronology_and_explicit_baseline(self):
+        b = saved_series(self.input, [spec(M1, 1), spec(M2, 2)])
+        for chronology in ("equal", "missing"):
+            for call in b.calls:
+                call["start_timestamp"] = "2026-08-04 12:00:00" if chronology == "equal" else ""
+            if chronology == "missing":
+                for table in ("heavy_sql", "errors"):
+                    for row in b.tables[table]:
+                        row["first_timestamp"] = ""
+                for dataset in b.manifest["datasets"]:
+                    dataset["first_timestamp"] = ""
+            cfg = normalize_config({"config_version": "1.0", "operations": {"series_baseline_measurement_id": M1}})
+            series = OperationSeries(b, cfg)
+            self.assertFalse(series.reliable)
+            for mid in (M2, M1, M2):
+                for basis in ("previous_observation", "previous_measurement", "first_observation"):
+                    with self.subTest(chronology=chronology, mid=mid, basis=basis):
+                        self.assertEqual(series.reference("Operation", "Alice", mid, basis),
+                                         (None, "series_chronology_unresolved"))
+                self.assertEqual(series.reference("Operation", "Alice", mid, "series_baseline"), (M1, None))
+
+    def test_all_observation_patterns_match_previous_scan_exactly(self):
+        # All nonempty presence patterns over four measurements, including
+        # leading/trailing gaps, isolated observations and a dense history.
+        mids = [M1, M2, M3, M4]
+        specs = [spec(mid, (mask + i) % 4, signature=f"Operation{mask // 3}", user=f"User{mask % 3}")
+                 for mask in range(1, 16) for i, mid in enumerate(mids) if mask & (1 << i)]
+        b = saved_series(self.input, specs, order=mids)
+        original_reference = OperationSeries.reference
+
+        def previous_scan(series, sig, user, current, basis):
+            if basis == "previous_observation" and series.reliable:
+                previous = [m for m in series.observed[(sig, user)]
+                            if series.position[m] < series.position[current]]
+                return (previous[-1], None) if previous else (None, "no_previous_observation")
+            return original_reference(series, sig, user, current, basis)
+
+        def assert_exact(actual, expected):
+            self.assertIs(type(actual), type(expected))
+            if isinstance(actual, dict):
+                self.assertEqual(list(actual), list(expected))
+                for key in actual:
+                    assert_exact(actual[key], expected[key])
+            elif isinstance(actual, (list, tuple)):
+                self.assertEqual(len(actual), len(expected))
+                for left, right in zip(actual, expected):
+                    assert_exact(left, right)
+            else:
+                self.assertEqual(actual, expected)
+
+        for order in (mids, list(reversed(mids))):
+            for selected in (None, [M4], [M3, M1]):
+                cfg = normalize_config({"config_version": "1.0", "measurement_ids": selected,
+                                        "operations": {"measurement_order": order, "series_baseline_measurement_id": M2}})
+                for builder in (operation_history, operation_history_all_users, measurement_comparisons, comparability):
+                    with self.subTest(order=order, selected=selected, builder=builder.__name__):
+                        actual = builder(b, cfg)
+                        with mock.patch.object(OperationSeries, "reference", previous_scan):
+                            expected = builder(b, cfg)
+                        assert_exact(actual, expected)
 
 
 if __name__ == "__main__":

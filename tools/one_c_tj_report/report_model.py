@@ -248,6 +248,15 @@ def present_table(name, source, config, partial, data=None, *, selected=None, no
     return TableView(name,presented,count,state,note)
 
 
+def _comparability_by_id(rows):
+    # The loader enforces unique IDs. Keep all matches in source order here
+    # to preserve the model's existing behavior for already assembled inputs.
+    index = {}
+    for row in rows:
+        index.setdefault(row['comparison_id'], []).append(row)
+    return index
+
+
 def build_model(data, config):
     c = config.settings
     for selected in (c.get('display_measurement_ids'), [c['focus_measurement_id']] if c.get('focus_measurement_id') else None):
@@ -298,12 +307,13 @@ def build_model(data, config):
                     section.tables.append(present_table(name,source,config,partial,data,selected=selected,note=note))
             if section_id == 'comparisons':
                 rows,available = select_rows('measurement_comparisons',data.slices.get('measurement_comparisons',[]),config,data)
+                contexts = _comparability_by_id(data.slices.get('comparability',[])) if rows else {}
                 if not rows:
                     append_table('measurement_comparisons')
                     append_table('comparability',selected=[])
                 for row in rows:
                     append_table('measurement_comparisons',selected=[row])
-                    context = [r for r in data.slices.get('comparability',[]) if r['comparison_id'] == row['comparison_id']]
+                    context = contexts.get(row['comparison_id'], [])
                     append_table('comparability',selected=context,note='Ограничения относятся к comparison_id выше; сохранённая база не меняется фильтром.')
                 section.note = f'Выбрано {len(rows)} из {available} сохранённых сравнений в окне отображения. Показаны сохранённые базы сравнения и статусы. Числовое изменение не доказывает исправление или регрессию кода.'
             elif section_id == 'apdex_overall':

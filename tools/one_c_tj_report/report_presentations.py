@@ -239,10 +239,23 @@ def literal(label, key, field):
     return Cell(label,'presentation_dictionary',key,field)
 
 
+def _comparability_cells_by_id(model):
+    index = {}
+    for view in table_views(model, 'comparability'):
+        for row in view.rows:
+            cells = cell_index(row)
+            # Multiple views can expose the same ID. As before, the first
+            # match supplies both the original cells and the display state.
+            index.setdefault(cells['comparison_id'].value, (row, cells))
+    return index
+
+
 def comparison_tables(model, name, context=False):
     result = []
+    views = table_views(model, name)
+    contexts = _comparability_cells_by_id(model) if context and any(v.rows for v in views) else {}
     title = 'Сравнение сохранённых показателей' if name == 'measurement_comparisons' else ('Сравнение DB-chatty' if name == 'db_chatty_changes' else 'Сравнение APDEX')
-    for view in table_views(model,name):
+    for view in views:
         for row in view.rows:
             index = cell_index(row)
             side_fields = (
@@ -267,15 +280,15 @@ def comparison_tables(model, name, context=False):
                 'Дельты и процентные статусы прочитаны из сохранённой строки; PDF их не рассчитывает.')
             tables = [sides,basis,values]
             if context:
-                matches = [r for v in table_views(model,'comparability') for r in v.rows if cell_index(r)['comparison_id'].value == index['comparison_id'].value]
-                if matches:
-                    other = cell_index(matches[0])
+                match = contexts.get(index['comparison_id'].value)
+                if match is not None:
+                    related, other = match
                     fields = (('Сопоставимость','comparability_status'),('Совпала техническая сигнатура','signature_match'),
                               ('Совпал идентификатор пользователя','user_match'),('Отношение к базе','reference_relation'),
                               ('Известные различия','known_differences'),('Неизвестные условия','unknown_parameters'),
                               ('Ограничения','known_limitations'))
                     tables.append(CompactTable('comparability-context','Сопоставимость и ограничения',tuple(x[0] for x in fields),
-                        [CompactRow(row.key,tuple(other[x[1]] for x in fields),matches[0].state)],matches[0].state,
+                        [CompactRow(row.key,tuple(other[x[1]] for x in fields),related.state)],related.state,
                         'Совпадение сигнатуры и идентификатора пользователя не подтверждает одинаковый пользовательский сценарий.'))
                     coverage_fields = (
                         ('CALL из частичных источников: опора','reference_calls_from_partial_sources'),
@@ -285,7 +298,7 @@ def comparison_tables(model, name, context=False):
                         ('DB по времени: опора','reference_measurement_db_linked_duration_percent'),
                         ('DB по времени: текущий','current_measurement_db_linked_duration_percent'))
                     tables.append(CompactTable('comparability-coverage','Покрытие сравниваемых выборок',tuple(x[0] for x in coverage_fields),
-                        [CompactRow(row.key,tuple(other[x[1]] for x in coverage_fields),matches[0].state)],matches[0].state))
+                        [CompactRow(row.key,tuple(other[x[1]] for x in coverage_fields),related.state)],related.state))
                 else:
                     tables.append(CompactTable('comparability-context','Сопоставимость и ограничения',('Состояние',),[],DisplayState.NOT_CALCULATED,'Срез comparability не предоставлен для этой строки.'))
             else:

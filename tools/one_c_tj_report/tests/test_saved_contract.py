@@ -19,12 +19,29 @@ from report_input import load_input, descriptor, parse_value
 from report_model import build_model, format_cell, DisplayState, stable_key
 from report_schema import canonical, digest, ReportError
 from report_layout import render_pdf
+from report_presentations import comparison_tables, table_views, cell_index
 
 FIXTURE = Path(__file__).parent/'fixtures/current'
 
 
 def values(row):
     return {cell.field:cell.value for cell in row.cells}
+
+
+def legacy_comparability(rows):
+    class Scan:
+        def get(self, key, default=None):
+            return [r for r in rows if r['comparison_id'] == key]
+    return Scan()
+
+
+def legacy_comparability_cells(model):
+    class Scan:
+        def get(self, key, default=None):
+            matches = [r for v in table_views(model, 'comparability') for r in v.rows
+                       if cell_index(r)['comparison_id'].value == key]
+            return (matches[0], cell_index(matches[0])) if matches else default
+    return Scan()
 
 
 class SavedContractTests(unittest.TestCase):
@@ -119,6 +136,92 @@ class SavedContractTests(unittest.TestCase):
         self.assertEqual(comparison['comparison_id'],context['comparison_id'])
         self.assertNotEqual(comparison['reference_measurement_id'],comparison['current_measurement_id'])
         self.assertEqual(context['unknown_parameters'],next(r['unknown_parameters'] for r in self.data.slices['comparability'] if r['comparison_id'] == comparison['comparison_id']))
+
+    def test_indexed_comparisons_match_scans_with_order_filters_and_missing_links(self):
+        self.data.slices['comparability'].reverse()
+        cfg = config_fixture(self.root, sections=['provenance','comparisons'], report_kind='comparison',
+                             display_measurement_ids=[self.mids[-1]],
+                             tables={'measurement_comparisons':{'top_n':3,
+                                     'sort':[{'field':'comparison_id','direction':'desc'}]}})
+        for state in ('complete', 'missing_link', 'empty', 'missing_slice'):
+            if state == 'missing_link':
+                chosen = values(table_views(build_model(self.data,cfg),'measurement_comparisons')[0].rows[0])
+                self.data.slices['comparability'] = [r for r in self.data.slices['comparability']
+                                                    if r['comparison_id'] != chosen['comparison_id']]
+            elif state == 'empty':
+                self.data.slices['comparability'] = []
+            elif state == 'missing_slice':
+                self.data.slices.pop('comparability')
+            with self.subTest(state=state):
+                actual = build_model(self.data,cfg)
+                with patch('report_model._comparability_by_id',legacy_comparability), \
+                     patch('report_presentations._comparability_cells_by_id',legacy_comparability_cells):
+                    expected = build_model(self.data,cfg)
+                self.assertEqual(actual,expected)  # Includes the complete technical model and provenance.
+                self.assertEqual(len(table_views(actual,'measurement_comparisons')),3)
+                if state != 'complete':
+                    contexts = [t for s in actual.main_sections for t in s.tables if t.name == 'comparability-context']
+                    self.assertTrue(any(t.state == DisplayState.NOT_CALCULATED for t in contexts))
+
+    def test_repeated_context_views_keep_source_order_and_first_cells(self):
+        original = self.data.slices['comparability'][0]
+        duplicate = dict(original, unknown_parameters=['second occurrence'])
+        self.data.slices['comparability'].insert(1,duplicate)
+        model,_ = self.model(['comparisons'],report_kind='comparison')
+        view = next(v for v in table_views(model,'comparability') if v.rows
+                    and values(v.rows[0])['comparison_id'] == original['comparison_id'])
+        self.assertEqual([values(r)['unknown_parameters'] for r in view.rows],
+                         [original['unknown_parameters'],duplicate['unknown_parameters']])
+        first_cells = cell_index(view.rows[0])
+        with patch('report_presentations.cell_index',wraps=cell_index) as indexed:
+            actual = comparison_tables(model,'measurement_comparisons',True)
+        related_rows = [r for v in table_views(model,'comparability') for r in v.rows]
+        for row in related_rows:
+            self.assertEqual(sum(call.args[0] is row for call in indexed.call_args_list),1)
+        with patch('report_presentations._comparability_cells_by_id',legacy_comparability_cells):
+            self.assertEqual(actual,comparison_tables(model,'measurement_comparisons',True))
+        projected = [c for s in actual for t in s.tables for r in t.rows for c in r.cells
+                     if c.source_file == 'comparability.csv' and c.row_key == view.rows[0].key]
+        self.assertTrue(projected)
+        for cell in projected:
+            self.assertIs(cell,first_cells[cell.field])
+
+    def test_duplicate_comparability_id_still_rejected_by_loader(self):
+        self.mutate_slice('comparability',lambda rows: rows.append(dict(rows[0])))
+        with self.assertRaisesRegex(ReportError,'duplicate key'):
+            load_input(self.analysis,self.slices)
+
+    def test_missing_comparability_id_still_rejected_by_loader(self):
+        self.mutate_slice('comparability',lambda rows: rows.pop())
+        with self.assertRaisesRegex(ReportError,'Comparability keys mismatch'):
+            load_input(self.analysis,self.slices)
+
+    def test_indexed_pdf_matches_scan_text_geometry_and_provenance(self):
+        from pypdf import PdfReader
+        self.data.slices['comparability'].reverse()
+        actual,cfg = self.model(['comparisons'],report_kind='comparison',
+                               tables={'measurement_comparisons':{'top_n':2}})
+        with patch('report_model._comparability_by_id',legacy_comparability), \
+             patch('report_presentations._comparability_cells_by_id',legacy_comparability_cells):
+            expected = build_model(self.data,cfg)
+        self.assertEqual(actual,expected)
+        snapshots = []
+        for name,model in (('indexed',actual),('scan',expected)):
+            output = self.root/(name+'.pdf')
+            render_pdf(model,cfg,self.data,output)
+            pages = []
+            for page in PdfReader(output).pages:
+                fragments = []
+                def visit(text, cm, tm, font, size):
+                    fragments.append((text,tuple(cm),tuple(tm),size))
+                text = page.extract_text(visitor_text=visit)
+                pages.append((text,tuple(page.mediabox),fragments))
+            snapshots.append(pages)
+        self.assertEqual(snapshots[0],snapshots[1])
+        text = '\n'.join(page[0] for page in snapshots[0])
+        for label in ('Сопоставимость и ограничения','Приложение: полные технические данные и происхождение',
+                      'Индекс происхождения значений основной части','V0001','comparability.csv'):
+            self.assertIn(label,text)
 
     def test_top_n_history_selects_whole_trajectory_in_saved_order(self):
         model,_ = self.model(['operations','problem_history'],report_kind='history',tables={'operation_history':{'sort':[{'field':'avg_us','direction':'desc'}],'top_n':1},'problem_history':{'top_n':1}})
