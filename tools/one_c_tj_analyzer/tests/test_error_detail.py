@@ -227,6 +227,7 @@ class ErrorDetailTests(unittest.TestCase):
             if key.startswith(('error_', 'incident_')):
                 manifest.pop(key)
         manifest.update(LEGACY_VERSIONS, schema_version='1.5', analyzer_version='1.5.0', event_detail_scope=['CALL','DBPOSTGRS'])
+        manifest.pop('verification', None)  # Not present in the legacy writer.
         manifest['artifacts'] = {k:v for k,v in manifest['artifacts'].items() if k in LEGACY_DETAIL_FILES}
         with (self.output/'errors.csv').open('w', encoding='utf-8-sig', newline='') as stream:
             csv.writer(stream).writerow(HEADERS['errors'])

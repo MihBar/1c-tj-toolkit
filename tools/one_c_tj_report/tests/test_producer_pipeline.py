@@ -113,6 +113,20 @@ class ProducerPipelineTests(unittest.TestCase):
         self.reports = self.demo / "reports"
         self.reports.mkdir(parents=True)
 
+    def test_basic_verification_notice(self):
+        self._python(ANALYZER_DIR / 'analyze_1c_tj.py', self.demo / 'raw/single',
+                     '--output-dir', self.analysis_single, '--verification', 'basic')
+        self._python(ANALYZER_DIR / 'derive_slices.py', '--analysis-dir', self.analysis_single,
+                     '--output-dir', self.slices_single, '--config', self.demo / 'configs/analytics.single.json',
+                     '--verification', 'basic')
+        pdf = self.reports / 'basic.pdf'
+        self._python(REPORT_DIR / 'build_report.py', '--analysis-dir', self.analysis_single,
+                     '--slices-dir', self.slices_single, '--report-config', REPORT_DIR / 'configs/overview.example.json',
+                     '--output', pdf)
+        cover = _normalized(PdfReader(pdf).pages[0].extract_text())
+        self.assertIn('Полная верификация не выполнялась', cover)
+        self.assertIn('basic', cover)
+
     def test_real_producers_verifiers_three_reports_and_failure_atomicity(self):
         analyzer = ANALYZER_DIR / "analyze_1c_tj.py"
         verify_analysis = ANALYZER_DIR / "verify_analysis.py"

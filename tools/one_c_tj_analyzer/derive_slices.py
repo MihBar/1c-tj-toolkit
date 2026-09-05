@@ -84,7 +84,9 @@ def validate_output_path(output: Path, input_root: Path, config_path: Path, over
 
 
 def run(argv: list[str] | None = None) -> dict:
+    from verification_policy import add_argument, metadata
     parser = argparse.ArgumentParser(description=__doc__)
+    add_argument(parser)
     parser.add_argument("--analysis-dir", type=Path, help="Saved analyzer schema-1.2 through 1.6 bundle; never a TJ directory")
     parser.add_argument("--output-dir", type=Path, help="Separate result directory")
     parser.add_argument("--config", type=Path, help="Versioned JSON configuration")
@@ -104,7 +106,7 @@ def run(argv: list[str] | None = None) -> dict:
     require(args.validate_only or args.output_dir is not None, "--output-dir is required unless --validate-only")
     config_path = args.config.resolve(strict=True)
     config, config_file_hash = load_config(config_path, args.slices)
-    bundle = load_bundle(args.analysis_dir)
+    bundle = load_bundle(args.analysis_dir, verification=args.verification)
     require(config["expected_bundle_id"] in (None, bundle.bundle_id), "Input bundle does not match expected_bundle_id")
     output = args.output_dir.resolve() if args.output_dir is not None else None
     if output is not None and not args.validate_only:
@@ -128,7 +130,9 @@ def run(argv: list[str] | None = None) -> dict:
     bundle.assert_unchanged()
     require(digest_bytes(config_path.read_bytes()) == config_file_hash, "Configuration changed during calculation")
     summary = {
-        "status": "PASS", "calculator_version": CALCULATOR_VERSION,
+        "status": "PASS" if args.verification == "full" else "OK", "calculator_version": CALCULATOR_VERSION,
+        "verification": metadata(args.verification, bundle.manifest["schema_version"]),
+        "verification_message": "Расчёт завершён. Полная верификация не выполнялась" if args.verification == "basic" else "Saved analysis bundle verified",
         "bundle_id": bundle.bundle_id, "call_count": len(bundle.calls),
         "source_analysis_complete": bundle.manifest["analysis_complete"],
         "validation_checks": bundle.checks, "selected_slices": config["slices"],
@@ -138,6 +142,7 @@ def run(argv: list[str] | None = None) -> dict:
     if args.validate_only:
         return summary
     manifest = {
+        "verification": metadata(args.verification, bundle.manifest["schema_version"]),
         "calculator": CALCULATOR_NAME, "calculator_version": CALCULATOR_VERSION,
         "slice_schema_version": SLICE_SCHEMA_VERSION,
         "input_schema_version": bundle.manifest["schema_version"],

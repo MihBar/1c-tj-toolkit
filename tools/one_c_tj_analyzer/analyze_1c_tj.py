@@ -1640,10 +1640,12 @@ def write_outputs(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    from verification_policy import add_argument
     parser = argparse.ArgumentParser(
         description="Deterministic analysis of 1C:Enterprise technological journal files. No PDF or generated conclusions.",
     )
     parser.add_argument("input_dir", type=Path, help="Folder containing .log files and/or supported archives")
+    add_argument(parser)
     parser.add_argument("-o", "--output-dir", type=Path, help="Output folder; default: <input>/analysis_data")
     parser.add_argument("--archive-mode", choices=("auto", "always", "never"), default="auto", help="auto skips an archive when its extracted sibling folder exists")
     parser.add_argument("--exclude-dir", action="append", default=[], help="Directory name to skip recursively; may be repeated")
@@ -1780,7 +1782,12 @@ def run(argv: list[str] | None = None) -> int:
             from slice_input import load_bundle
             phase = "result_verification"
             progress.start("result_verification")
-            load_bundle(stage)
+            load_bundle(stage, verification=args.verification)
+            from verification_policy import metadata
+            manifest_path = stage / "analysis_metrics.json"
+            published_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            published_manifest["verification"] = metadata(args.verification)
+            manifest_path.write_text(json.dumps(published_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
             progress.finish()
             phase = "result_publication"
             progress.start("result_publication")
@@ -1796,6 +1803,8 @@ def run(argv: list[str] | None = None) -> int:
         finally:
             store.close()
     print(json.dumps({
+        "verification": metadata(args.verification),
+        "verification_message": "Расчёт завершён. Полная верификация не выполнялась" if args.verification == "basic" else "Saved analysis bundle verified",
         "status": ("partial" if has_source_problems(health, warnings) else "ok") if valid_health else "no_valid_logs",
         "input": str(root),
         "output": str(output_dir),

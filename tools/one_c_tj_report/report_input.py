@@ -294,6 +294,18 @@ def validate_analytics(c, known_slices, bundle_id):
         require((type(value) is int and value > 0) if rule['metric'].startswith('db_chatty.') else value is None, 'Invalid DB rule threshold')
 
 
+def validate_verification_metadata(manifest):
+    if 'verification' not in manifest:
+        return
+    v = manifest['verification']
+    require(isinstance(v, dict) and v.get('policy_version') == '1' and v.get('mode') in ('full', 'basic'), 'Invalid verification policy')
+    require(v.get('scope') == 'saved_analysis_bundle' and
+            v.get('full_verification') == ('passed' if v['mode'] == 'full' else 'skipped'), 'Invalid verification status')
+    require(v.get('input_schema_version') == manifest.get('schema_version', manifest.get('input_schema_version')), 'Verification schema mismatch')
+    require(all(isinstance(v.get(k), list) and all(isinstance(item, str) for item in v[k])
+                for k in ('completed_groups', 'skipped_groups')), 'Invalid verification groups')
+
+
 def load_input(analysis_dir, slices_dir=None):
     try:
         return _load_input(analysis_dir, slices_dir)
@@ -310,6 +322,7 @@ def _load_input(analysis_dir, slices_dir):
     hashes = {n: descriptor(safe_file(root,n)) for n in sorted(names)}
     m = read_json(safe_file(root,'analysis_metrics.json'))
     require(isinstance(m, dict), 'Analysis manifest must be an object')
+    validate_verification_metadata(m)
     for key, value in p['analysis_versions'].items():
         require(m.get(key) == value, f'Unsupported/missing {key}: expected {value}')
     require(m.get('publication_state') == 'complete', 'Analysis publication is incomplete')
@@ -399,6 +412,7 @@ def _load_input(analysis_dir, slices_dir):
         sh = {'slice_manifest.json': descriptor(safe_file(sroot,'slice_manifest.json'))}
         s = read_json(safe_file(sroot,'slice_manifest.json'))
         require(isinstance(s,dict), 'Invalid slice manifest')
+        validate_verification_metadata(s)
         expected = {'calculator':'1c_tj_saved_result_slices','calculator_version':'1.8.0','slice_schema_version':'1.8','config_version':'1.0','bundle_id':bundle_id,'input_files':hashes,'input_schema_version':'1.6','input_analyzer_version':'1.6.1','input_sql_normalization_version':'2.0','input_linkage_rules_version':m['linkage_rules_version'],'input_error_rules':{k:m[k] for k in ('error_signature_version','error_linkage_rules_version','incident_rules_version')},'recorded_source_set_hash_sha256':m['source_set_hash_sha256'],'source_analysis_complete':m['analysis_complete'],'input_files_unchanged':True}
         for k,v in expected.items():
             require(s.get(k) == v, f'Slice manifest mismatch: {k}')

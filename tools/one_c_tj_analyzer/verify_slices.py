@@ -10,6 +10,7 @@ from derive_slices import CALCULATOR_NAME, MANIFEST_NAME, SLICE_METHOD, csv_byte
 from slice_config import CALCULATOR_VERSION, SLICE_SCHEMA_VERSION, SliceError, canonical_json, digest_bytes, normalize_config, strict_json
 from slice_input import load_bundle, require
 from slice_metrics import SLICE_BUILDERS
+from verification_policy import BASIC_CHECKS, validate_metadata
 
 
 def verify(analysis_dir: Path, slices_dir: Path) -> dict:
@@ -40,7 +41,13 @@ def verify(analysis_dir: Path, slices_dir: Path) -> dict:
     require(manifest.get("selected_slices") == config["slices"], "Slice selection mismatch")
     population = {"primary": "call_observations.csv", "key": ["bundle_id", "call_id"], "count": len(bundle.calls), "json_and_top_calls_are_not_additional_observations": True}
     require(manifest.get("population") == population, "Population contract mismatch")
-    require(manifest.get("input_files_unchanged") is True and manifest.get("validation_checks") == bundle.checks, "Validation metadata mismatch")
+    recorded_checks = bundle.checks
+    if "verification" in manifest:
+        validate_metadata(manifest["verification"])
+        require(manifest["verification"]["input_schema_version"] == bundle.manifest["schema_version"], "Verification schema mismatch")
+        if manifest["verification"]["mode"] == "basic":
+            recorded_checks = BASIC_CHECKS
+    require(manifest.get("input_files_unchanged") is True and manifest.get("validation_checks") == recorded_checks, "Validation metadata mismatch")
     require(manifest.get("method") == SLICE_METHOD, "Calculation method metadata mismatch")
     expected_outputs = {}
     for name in config["slices"]:

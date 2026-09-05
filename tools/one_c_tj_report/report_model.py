@@ -96,6 +96,7 @@ class ReportModel:
     partial: bool
     sections: list[Section]
     main_sections: list[MainSection] = field(default_factory=list)
+    verification_notice: str = ''
 
 
 def stable_key(name, row):
@@ -344,6 +345,11 @@ def build_model(data, config):
                     section.note = 'Источники выбраны через принадлежность замеров наборам данных. Показатели файлов и наборов сохраняют исходную область capture, которая может охватывать несколько дней.'
         sections.append(section)
     model = ReportModel(c['title'],c['report_date'],c['report_kind'],data.bundle_id,partial,sections)
+    policies = [m.get('verification') for m in (data.manifest, data.slice_manifest or {})]
+    if any(v and v.get('mode') == 'basic' for v in policies):
+        model.verification_notice = 'При подготовке данных использован режим basic. Полная верификация не выполнялась на одном или нескольких этапах. Построение PDF не заменяет полную верификацию.'
+    elif any(policies):
+        model.verification_notice = 'Сохранённый комплект анализа проверен в режиме full. Статус отдельной проверки воспроизводимости срезов в комплекте не записан.'
     try:
         from .report_presentations import build_main_sections
     except ImportError:

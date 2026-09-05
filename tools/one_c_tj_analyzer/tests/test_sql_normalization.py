@@ -305,6 +305,7 @@ class SqlBundleTests(unittest.TestCase):
         self.make(['select x from physical'])
         self.manifest['schema_version'] = '1.3'
         self.manifest['analyzer_version'] = '1.3.0'
+        self.manifest.pop('verification', None)  # Emulate the complete old format.
         # The current writer uses explicit error counters; this fixture emulates
         # the complete old format, including the empty legacy error table.
         from slice_input import HEADERS

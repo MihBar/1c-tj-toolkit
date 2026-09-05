@@ -249,6 +249,8 @@ def render_pdf(model, config, data, output, overwrite=False):
         [p('Тип отчета','appendix_head'),p(kind_label),p('Дата отчета','appendix_head'),p(model.report_date)],
         [p('Комплект','appendix_head'),p(model.bundle_id),p('Состояние','appendix_head'),p('частичные данные' if model.partial else 'готовые данные')],
     ]
+    if model.verification_notice:
+        story.append(p(model.verification_notice, 'small'))
     cover_values=content_width-54*mm
     cover=Table(cover_rows,colWidths=[27*mm,cover_values*0.47,27*mm,cover_values*0.53],hAlign='LEFT')
     cover.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'TOP'),('GRID',(0,0),(-1,-1),0.35,line),

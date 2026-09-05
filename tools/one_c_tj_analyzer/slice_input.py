@@ -27,7 +27,8 @@ from sql_normalization import (SQL_NORMALIZATION_VERSION, LEGACY_SQL_NORMALIZATI
 from event_store import DETAIL_FILES, CALL_DETAIL_FIELDS
 from error_rules import ERROR_GROUP_FIELDS, ERROR_METADATA
 from source_identity import file_hash
-from verify_event_store import verify_detail
+from verify_event_store import verify_detail, descriptors, safe_path
+from verification_policy import MODES, BASIC_CHECKS, validate_metadata
 from verify_populations import CHECKS as POPULATION_CHECKS
 
 CALL_FIELDS = "call_id measurement_id dataset_id user signature start_timestamp end_timestamp duration_us cpu_us db_count db_duration_us db_rows sdbl_count in_bytes out_bytes memory memory_peak lock_count lock_duration_us error_count process source context_sample".split()
@@ -210,7 +211,7 @@ class Bundle:
         require(hash_input_files(self.root, self.input_files) == self.input_files, "Input bundle changed during calculation")
 
 
-def validate(manifest: dict, tables: dict[str, list[dict]]) -> tuple[list[dict], list[str]]:
+def validate(manifest: dict, tables: dict[str, list[dict]], verification: str = "full") -> tuple[list[dict], list[str]]:
     require(isinstance(manifest, dict), "analysis_metrics.json: expected an object")
     require(manifest.get("schema_version") in SUPPORTED_INPUT_SCHEMAS, "Unsupported input schema; supported: 1.2, 1.3, 1.4, 1.5, 1.6")
     numeric_schema = manifest["schema_version"] in {"1.3", "1.4", "1.5", "1.6"}
@@ -248,6 +249,9 @@ def validate(manifest: dict, tables: dict[str, list[dict]]) -> tuple[list[dict],
         if name == "call_observations":
             continue
         json_rows = manifest.get(name)
+        if verification == "basic":
+            require(isinstance(json_rows, list) and all(isinstance(row, dict) for row in json_rows), f"Invalid {name} rows")
+            continue
         require(isinstance(json_rows, list) and len(json_rows) == len(csv_rows), f"{name}: CSV/JSON row count mismatch")
         for index, (csv_row, json_row) in enumerate(zip(csv_rows, json_rows), 2):
             require(isinstance(json_row, dict), f"JSON {name} row {index}: expected object")
@@ -332,6 +336,20 @@ def validate(manifest: dict, tables: dict[str, list[dict]]) -> tuple[list[dict],
         require(cid not in top_ids and cid in raw_calls and row == raw_calls[cid], "top_calls is not a unique exact subset of CALL")
         top_ids.add(cid)
     checks.append("unique_calls_and_exact_top_subset")
+
+    if verification == "basic":
+        # CALL conversion, null semantics and input references above are needed
+        # by the calculators. The following full branch only reconciles results.
+        for name, keys in (
+            ("operations", ("measurement_id", "dataset_id", "user", "signature")),
+            ("linkage", ("measurement_id", "dataset_id")),
+            ("heavy_sql", ("measurement_id", "sql_fingerprint_sha256")),
+            ("errors", ("measurement_id", "event", "signature_id" if event_detail and manifest["schema_version"] == "1.6" else "signature")),
+            ("locks", ("measurement_id", "event", "context")),
+            ("identical_operations", ("signature", "user", "measurement_id")),
+        ):
+            unique(tables[name], keys, name)
+        return sorted(calls, key=lambda c: c["call_id"]), BASIC_CHECKS[:3]
 
     op_fields = ("measurement_id", "dataset_id", "user", "signature")
     op_index = unique(tables["operations"], op_fields, "operations")
@@ -478,14 +496,18 @@ def validate(manifest: dict, tables: dict[str, list[dict]]) -> tuple[list[dict],
     return sorted(calls, key=lambda c: c["call_id"]), checks
 
 
-def load_bundle(path: Path) -> Bundle:
+def load_bundle(path: Path, verification: str = "full") -> Bundle:
     try:
+        require(verification in MODES, "verification must be full or basic")
         root = path.resolve(strict=True)
         require(root.is_dir(), "Input must be a saved-result directory")
         manifest_raw = safe_bundle_file(root, "analysis_metrics.json").read_bytes()
         manifest = strict_json(manifest_raw.decode("utf-8-sig"), "analysis_metrics.json")
         require(isinstance(manifest, dict), "analysis_metrics.json: expected an object")
         require(manifest.get("schema_version") in SUPPORTED_INPUT_SCHEMAS, "Unsupported input schema; supported: 1.2, 1.3, 1.4, 1.5, 1.6")
+        if "verification" in manifest:
+            validate_metadata(manifest["verification"])
+            require(manifest["verification"]["input_schema_version"] == manifest.get("schema_version"), "Verification schema mismatch")
         hashes = {"analysis_metrics.json": {"sha256": digest_bytes(manifest_raw), "size_bytes": len(manifest_raw)}}
         tables = {}
         for name in sorted(HEADERS):
@@ -502,13 +524,18 @@ def load_bundle(path: Path) -> Bundle:
                     require(set(SQL_CSV_FIELDS) <= set(header), "heavy_sql: missing SQL normalization header")
                 else:
                     require(not set(SQL_CSV_FIELDS) & set(header), "Versioned SQL header in legacy schema")
-        calls, checks = validate(manifest, tables)
+        calls, checks = validate(manifest, tables, verification)
         if manifest["schema_version"] in {"1.5", "1.6"}:
-            hashes.update(verify_detail(root, manifest, calls))
-            checks.extend(POPULATION_CHECKS)
-            checks.append("full_db_events_dictionary_link_decisions_candidates_and_accounting")
-            if manifest["schema_version"] == "1.6":
-                checks.append("error_events_distinct_calls_and_versioned_incident_hypotheses")
+            if verification == "full":
+                hashes.update(verify_detail(root, manifest, calls))
+                checks.extend(POPULATION_CHECKS)
+                checks.append("full_db_events_dictionary_link_decisions_candidates_and_accounting")
+                if manifest["schema_version"] == "1.6":
+                    checks.append("error_events_distinct_calls_and_versioned_incident_hypotheses")
+            else:
+                hashes.update(load_detail_structure(root, manifest))
+        if verification == "basic":
+            checks.append(BASIC_CHECKS[3])
         bundle_id = digest_bytes(canonical_json(hashes).encode())
         bundle = Bundle(root, manifest, tables, calls, hashes, bundle_id, checks)
         bundle.assert_unchanged()
@@ -517,3 +544,28 @@ def load_bundle(path: Path) -> Bundle:
         raise
     except (OSError, UnicodeError, csv.Error, sqlite3.Error, KeyError, TypeError, ValueError, OverflowError) as exc:
         raise SliceError(f"Invalid saved-result bundle: {exc}") from exc
+
+
+def load_detail_structure(root, manifest):
+    """Read identity and storage metadata without scanning event populations."""
+    from contextlib import closing
+    from event_store import VERSIONS, LEGACY_VERSIONS
+    require(manifest.get("publication_state") == "complete", "incomplete publication")
+    require(manifest.get("source_processing_complete") == manifest["analysis_complete"], "source completeness mismatch")
+    versions = VERSIONS if manifest["schema_version"] == "1.6" else LEGACY_VERSIONS
+    require(all(manifest.get(k) == v for k, v in versions.items()), "Unsupported detail versions")
+    hashes = descriptors(root, manifest)
+    source_map = strict_json(safe_path(root, "source_map.json").read_text(encoding="utf-8"), "source map")
+    require(isinstance(source_map, dict) and source_map.get("capture_id") == manifest.get("capture_id")
+            and isinstance(source_map.get("sources"), list), "Invalid source map")
+    with closing(sqlite3.connect(safe_path(root, "analysis.sqlite").as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+        require(db.execute("PRAGMA user_version").fetchone()[0] == (2 if manifest["schema_version"] == "1.6" else 1), "Unsupported storage schema")
+        saved = {k: strict_json(v, "SQLite metadata") for k, v in db.execute("SELECT key,value FROM metadata")}
+        require(saved.get("publication_state") == "complete" and all(saved.get(k) == v for k, v in versions.items()), "Invalid storage metadata")
+        schema_names = ["event_schema.sql"] + (["error_schema.sql"] if manifest["schema_version"] == "1.6" else [])
+        expected_tables = set()
+        for name in schema_names:
+            expected_tables.update(re.findall(r"CREATE TABLE (\w+)", Path(__file__).with_name(name).read_text(encoding="utf-8")))
+        actual_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        require(expected_tables <= actual_tables, "Missing storage tables")
+    return hashes
